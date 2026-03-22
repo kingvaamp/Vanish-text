@@ -1,7 +1,7 @@
 import 'react-native-quick-crypto/shim';
 import { useState, useEffect, useRef, useCallback } from "react";
 import useCrypto from './useCrypto';
-import { io } from 'socket.io-client';
+import { supabase } from './src/lib/supabase';
 import * as Notifications from 'expo-notifications';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Animated, Dimensions, Platform, LogBox, StatusBar } from 'react-native';
 import * as Device from 'expo-device';
@@ -79,10 +79,14 @@ function LoginScreen({ onLogin }) {
           <div style={{flex:1,height:1,background:C.border}}></div><span style={{fontSize:13,color:C.muted,fontWeight:600}}>OR</span><div style={{flex:1,height:1,background:C.border}}></div>
         </div>
 
-        <button onClick={()=>{
+        <button onClick={async ()=>{
           setLoading(true);
-          setTimeout(()=>onLogin({ token: 'jwt-google-auth' }), 1000);
-        }} disabled={loading} style={{width:'100%',padding:'16px',borderRadius:12,background:C.s2,border:`1px solid ${C.border}`,color:'#fff',fontSize:16,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',gap:12,cursor:'pointer',transition:'opacity 0.2s'}}>
+          const { error } = await supabase.auth.signInWithOAuth({
+            provider: 'google',
+            options: { redirectTo: window.location.origin }
+          });
+          if (error) { console.error(error); setLoading(false); alert("Erreur Supabase Auth"); }
+        }} disabled={loading} style={{width:'100%',padding:'16px',borderRadius:12,background:C.s2,border:`1px solid ${C.border}`,color:'#fff',fontSize:16,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',gap:12,cursor:'pointer',transition:'opacity 0.2s',opacity:loading ? 0.6 : 1}}>
           <svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
           Continue with Google
         </button>
@@ -192,8 +196,7 @@ export default function VanishText() {
   const [newContactPhone,setNewContactPhone]=useState('');
   
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [socket, setSocket] = useState(null);
-  const [userToken, setUserToken] = useState(null); 
+  const [session, setSession] = useState(null);
   const [expoPushToken, setExpoPushToken] = useState('');
   const [directory, setDirectory] = useState({});
 
@@ -234,49 +237,86 @@ export default function VanishText() {
   const nref=useRef(200);
   const listRef=useRef(null);
 
-  // Socket.IO Connection & PKI Directory Hooks
-  useEffect(() => {
-    if (!isAuthenticated || !userToken) return;
-    const s = io(SERVER, { transports: ['websocket'], auth: { token: userToken } });
-    setSocket(s);
-
-    s.on('directory_update', (dir) => setDirectory(dir));
-
-    return () => s.disconnect();
-  }, [userToken, isAuthenticated]);
-
-  // Enregistrement asynchrone de l'Identité Publique
-  useEffect(() => {
-    if (socket && socket.connected && keys?.type === 'identity' && keys?.kp?.publicB64) {
-      socket.emit('register_identity', keys.kp.publicB64);
+  // ── SUPABASE AUTH & PKI DIRECTORY & REALTIME ──
+  const fetchDirectory = useCallback(async () => {
+    const { data } = await supabase.from('profiles').select('id, public_key, display_name');
+    if (data) {
+      const dir = {};
+      data.forEach(p => { if (p.public_key) dir[p.id] = { publicKey: p.public_key, name: p.display_name }; });
+      setDirectory(dir);
     }
-  }, [socket, keys]);
+  }, []);
 
-  // Socket.IO Message Handler
   useEffect(() => {
-    if (!socket) return;
-    const handleMessage = (m) => {
-      setConvs(p => {
-        const convId = m.cid || 'c1';
-        if (!p[convId]) return p;
-        const c = { ...p[convId] };
-        if (c.messages.some(msg => msg.id === m.id)) return p;
-        c.messages = [...c.messages, m];
-        const unreadKey = m.sender === 'alice' ? 'uB' : 'uA';
-        c[unreadKey] = (c[unreadKey] || 0) + 1;
-        return { ...p, [convId]: c };
-      });
-      
-      // Trigger local OS notification if app is in background (Web & Native)
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden' && "Notification" in window && Notification.permission === "granted") {
-        new window.Notification("VanishText", { body: "🔒 Encrypted Message Received" });
-      } else {
-        Notifications.scheduleNotificationAsync({ content: { title: "VanishText", body: "🔒 Encrypted Message" }, trigger: null }).catch(()=>{});
-      }
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setIsAuthenticated(!!session);
+      if (session) fetchDirectory();
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      setIsAuthenticated(!!session);
+      if (session) fetchDirectory();
+    });
+    return () => subscription.unsubscribe();
+  }, [fetchDirectory]);
+
+  useEffect(() => {
+    if (session && keys?.type === 'identity' && keys?.kp?.publicB64) {
+      supabase.from('profiles').upsert({
+        id: session.user.id,
+        email: session.user.email,
+        display_name: session.user.user_metadata?.full_name || 'Anonyme',
+        public_key: keys.kp.publicB64,
+        updated_at: new Date()
+      }).then(() => fetchDirectory());
+    }
+  }, [session, keys, fetchDirectory]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const profilesSub = supabase.channel('public:profiles')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, fetchDirectory)
+      .subscribe();
+
+    const messagesSub = supabase.channel('public:messages')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload) => {
+        const m = payload.new;
+        if (m.sender_id === session?.user?.id) return; // Prevent local echo duplicate
+        
+        let decryptedText = "[Message non déchiffrable]";
+        if (m.ciphertexts && m.ciphertexts[session.user.id]) {
+           const senderProf = directory[m.sender_id];
+           if (senderProf) decryptedText = await decryptMessageWithSenderKey(m.ciphertexts[session.user.id], senderProf.publicKey);
+        }
+
+        const formattedMsg = {
+          id: m.id, type: 'text', text: decryptedText,
+          sender: m.sender_id, time: now(), isRead: false,
+          ttl: 0, hasTtl: false, cid: m.cid || 'c1'
+        };
+
+        setConvs(p => {
+          const cid = formattedMsg.cid;
+          if (!p[cid]) return p;
+          const c = { ...p[cid] };
+          if (c.messages.some(msg => msg.id === formattedMsg.id)) return p;
+          c.messages = [...c.messages, formattedMsg];
+          const unreadKey = formattedMsg.sender === view ? 'uB' : 'uA'; // Fallbacks UI mock
+          c[unreadKey] = (c[unreadKey] || 0) + 1;
+          return { ...p, [cid]: c };
+        });
+        
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden' && "Notification" in window && Notification.permission === "granted") {
+          new window.Notification("VanishText", { body: "🔒 Encrypted Message" });
+        }
+      }).subscribe();
+
+    return () => {
+      supabase.removeChannel(profilesSub);
+      supabase.removeChannel(messagesSub);
     };
-    socket.on('receive_message', handleMessage);
-    return () => socket.off('receive_message', handleMessage);
-  }, [socket]);
+  }, [isAuthenticated, session, directory, fetchDirectory, decryptMessageWithSenderKey, view]);
 
   // TTL engine
   useEffect(()=>{
@@ -325,22 +365,27 @@ export default function VanishText() {
   },[convs,openConv]);
 
   const sendMsg=useCallback(async (text,cid=activeConv)=>{
-    if(!text.trim()||!cid||!socket) return;
+    if(!text.trim()||!cid||!session) return;
     
-    // N-Way Chiffrement asynchrone (Point-to-Point pour CHAQUE socket connecté)
     const ciphertexts = await encryptMessageForDirectory(text.trim(), directory) || {};
+    const localId = nid();
     
-    const m={id:nid(),type:'text',text:'[Message Chiffré]',ciphertexts,senderPublicKey:keys?.kp?.publicB64,sender:view,time:now(),status:'sent',isRead:false,ttl:0,hasTtl:false,enc:rnd(6)+'…'+rnd(8), cid};
+    const dbMsg = {
+      id: localId, // Match local UI id with DB id
+      sender_id: session.user.id,
+      ciphertexts,
+      cid
+    };
     
-    // Relais Serveur
-    socket.emit('send_message', m);
+    // Relais DB Supabase
+    supabase.from('messages').insert([dbMsg]).then(({ error }) => { if (error) console.error("Send error", error); });
 
-    // Interface Locale (L'expéditeur voit toujours son message en clair)
-    const mLocal = { ...m, text: text.trim() };
+    // Interface Locale (Affiche instantanément)
+    const mLocal = { id: localId, type: 'text', text: text.trim(), sender: session.user.id, time: now(), status: 'sent', isRead: false, ttl: 0, hasTtl: false, cid };
     setConvs(p=>{const c={...p[cid]};c.messages=[...c.messages,mLocal];c[view==='alice'?'uB':'uA']=(c[view==='alice'?'uB':'uA']||0)+1;return{...p,[cid]:c};});
     setInput('');
-    setTimeout(()=>setConvs(p=>{const c={...p[cid]};c.messages=c.messages.map(x=>x.id===m.id?{...x,status:'delivered'}:x);return{...p,[cid]:c};}),700);
-  },[activeConv,view,encryptMessageForDirectory,directory,keys,socket]);
+    setTimeout(()=>setConvs(p=>{const c={...p[cid]};c.messages=c.messages.map(x=>x.id===localId?{...x,status:'delivered'}:x);return{...p,[cid]:c};}),700);
+  },[activeConv,view,encryptMessageForDirectory,directory,session]);
 
   const readMsg=useCallback(async (cid,mid)=>{
     let targetMsg = null;
@@ -350,10 +395,11 @@ export default function VanishText() {
     let decryptedText = targetMsg.text;
     
     // Si c'est un message entrant avec N-Way cryptographie
-    if (targetMsg.ciphertexts && socket) {
-      const myCipher = targetMsg.ciphertexts[socket.id];
-      if (myCipher && targetMsg.senderPublicKey) {
-         decryptedText = await decryptMessageWithSenderKey(myCipher, targetMsg.senderPublicKey);
+    if (targetMsg.ciphertexts && session) {
+      const myCipher = targetMsg.ciphertexts[session.user.id];
+      if (myCipher) {
+         const senderProf = directory[targetMsg.sender];
+         if (senderProf) decryptedText = await decryptMessageWithSenderKey(myCipher, senderProf.publicKey);
       } else {
          decryptedText = "[Réseau Indisponible lors de l'envoi / Non-Déchiffrable]";
       }
