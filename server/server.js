@@ -3,6 +3,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const { createClient } = require('redis');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
 app.use(cors());
@@ -57,9 +58,14 @@ io.on('connection', (socket) => {
   });
 });
 
-const path = require('path');
+// Serve static files from the dist folder
 app.use(express.static(path.join(__dirname, 'dist')));
 
+app.get('/api', (req, res) => {
+  res.send('VanishText Backend is running (Redis + Socket.io)');
+});
+
+// Fallback to index.html for React Router (SPA routing)
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
