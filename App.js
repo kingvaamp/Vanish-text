@@ -1,4 +1,3 @@
-import 'react-native-quick-crypto/shim';
 import { useState, useEffect, useRef, useCallback } from "react";
 import useCrypto from './useCrypto';
 import { supabase } from './src/lib/supabase';
