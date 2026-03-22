@@ -3,13 +3,14 @@ const http = require('http');
 const { Server } = require('socket.io');
 const { createClient } = require('redis');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
 app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 
 // Configuration Redis avec Fallback en mémoire
 let useRedis = false;
@@ -57,8 +58,16 @@ io.on('connection', (socket) => {
   });
 });
 
-app.get('/', (req, res) => {
+// Serve static files from the dist folder
+app.use(express.static(path.join(__dirname, 'dist')));
+
+app.get('/api', (req, res) => {
   res.send('VanishText Backend is running (Redis + Socket.io)');
+});
+
+// Fallback to index.html for React Router (SPA routing)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
 server.listen(PORT, () => {
