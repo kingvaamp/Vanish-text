@@ -6,6 +6,7 @@
     "start": "node server/server.js",
     "dev": "expo start",
     "build": "npx expo export -p web",
+    "postinstall": "npx expo export -p web",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web"
