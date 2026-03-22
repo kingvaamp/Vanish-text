@@ -13,7 +13,9 @@ const PORT = 3001;
 
 // Configuration Redis avec Fallback en mémoire
 let useRedis = false;
-const redisClient = createClient();
+const redisClient = createClient({
+  url: process.env.REDIS_URL || process.env.REDIS_PRIVATE_URL || 'redis://localhost:6379'
+});
 
 redisClient.on('error', (err) => {
   console.log('⚠️ Redis configuration non disponible localement. Utilisation du fallback en mémoire rapide.');

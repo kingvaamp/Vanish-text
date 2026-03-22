@@ -1,8 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import useCrypto from './useCrypto';
 import { io } from 'socket.io-client';
+import * as Notifications from 'expo-notifications';
+import * as Device from 'expo-device';
 
-const socket = io('http://localhost:3001');
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
+
+const SERVER = typeof __DEV__ !== 'undefined' && __DEV__ ? 'http://localhost:3001' : 'https://vanishtext-backend.railway.app';
 
 const C = {
   bg:'#080808',s1:'#111',s2:'#181818',s3:'#222',s4:'#2a2a2a',s5:'#333',
@@ -14,6 +24,73 @@ const C = {
   blue:'#3b82f6',bdim:'rgba(59,130,246,.1)',
 };
 const F = "Helvetica,'Helvetica Neue',Arial,sans-serif";
+
+function LoginScreen({ onLogin }) {
+  const [step, setStep] = useState('phone');
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  return (
+    <div style={{position:'absolute',inset:0,background:C.bg,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',fontFamily:F,color:C.text,zIndex:100}}>
+      <div style={{width:'100%',padding:32,display:'flex',flexDirection:'column',alignItems:'center'}}>
+        <div style={{width:64,height:64,borderRadius:16,background:C.red,display:'flex',alignItems:'center',justifyContent:'center',marginBottom:24,boxShadow:`0 8px 32px rgba(204,0,0,0.4)`}}>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="white"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2"/></svg>
+        </div>
+        <h1 style={{fontSize:28,fontWeight:800,marginBottom:8,letterSpacing:'-0.03em'}}>VanishText</h1>
+        <p style={{fontSize:15,color:C.muted,marginBottom:40,textAlign:'center',lineHeight:1.5}}>Enter your phone number to get started or sign in with Google.</p>
+
+        <div style={{width:'100%',background:C.s1,border:`1px solid ${C.border}`,borderRadius:20,padding:24,display:'flex',flexDirection:'column',gap:16}}>
+          {step === 'phone' ? (
+            <>
+              <div style={{background:C.s3,borderRadius:12,padding:'8px 14px',border:`1px solid ${C.border}`}}>
+                <div style={{fontSize:11,color:C.muted,fontWeight:700,marginBottom:4,textTransform:'uppercase',letterSpacing:1}}>Phone Number</div>
+                <input type="tel" value={phone} onChange={e=>setPhone(e.target.value)} placeholder="+1 234 567 8900" style={{width:'100%',background:'transparent',border:'none',color:'#fff',fontSize:18,outline:'none',fontFamily:F}} />
+              </div>
+              <button onClick={()=>{
+                if(phone.length<5) return; setLoading(true);
+                setTimeout(()=>{setLoading(false);setStep('code');}, 1000);
+              }} disabled={loading || phone.length<5} style={{width:'100%',padding:'16px',borderRadius:12,fontSize:16,fontWeight:700,background:phone.length>=5?C.red:C.s4,color:phone.length>=5?'#fff':C.muted,border:'none',cursor:phone.length>=5?'pointer':'not-allowed',transition:'all 0.2s',opacity:loading?0.7:1}}>
+                {loading ? 'Sending SMS...' : 'Continue'}
+              </button>
+            </>
+          ) : (
+            <>
+              <div style={{background:C.s3,borderRadius:12,padding:'8px 14px',border:`1px solid ${C.border}`}}>
+                <div style={{fontSize:11,color:C.muted,fontWeight:700,marginBottom:4,textTransform:'uppercase',letterSpacing:1}}>Verification Code (SMS)</div>
+                <input type="number" autoFocus value={code} onChange={e=>setCode(e.target.value)} placeholder="000 000" style={{width:'100%',background:'transparent',border:'none',color:'#fff',fontSize:18,outline:'none',fontFamily:F,letterSpacing:4}} />
+              </div>
+              <button onClick={()=>{
+                if(code.length<4) return; setLoading(true);
+                setTimeout(()=>onLogin({ token: 'jwt-phone-'+phone }), 1000);
+              }} disabled={loading || code.length<4} style={{width:'100%',padding:'16px',borderRadius:12,fontSize:16,fontWeight:700,background:code.length>=4?C.red:C.s4,color:code.length>=4?'#fff':C.muted,border:'none',cursor:code.length>=4?'pointer':'not-allowed',transition:'all 0.2s',opacity:loading?0.7:1}}>
+                {loading ? 'Verifying...' : 'Sign In'}
+              </button>
+              <button onClick={()=>{setStep('phone');setCode('');}} style={{background:'transparent',border:'none',color:C.muted,fontSize:14,cursor:'pointer',marginTop:4}}>← Back</button>
+            </>
+          )}
+        </div>
+
+        <div style={{width:'100%',display:'flex',alignItems:'center',gap:16,margin:'32px 0'}}>
+          <div style={{flex:1,height:1,background:C.border}}></div><span style={{fontSize:13,color:C.muted,fontWeight:600}}>OR</span><div style={{flex:1,height:1,background:C.border}}></div>
+        </div>
+
+        <button onClick={()=>{
+          setLoading(true);
+          setTimeout(()=>onLogin({ token: 'jwt-google-auth' }), 1000);
+        }} disabled={loading} style={{width:'100%',padding:'16px',borderRadius:12,background:C.s2,border:`1px solid ${C.border}`,color:'#fff',fontSize:16,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',gap:12,cursor:'pointer',transition:'opacity 0.2s'}}>
+          <svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+          Continue with Google
+        </button>
+
+        <div style={{marginTop:48,display:'flex',alignItems:'center',gap:6,color:C.muted}}>
+          <span style={{fontSize:14}}>🔒</span><span style={{fontSize:12,fontWeight:600,letterSpacing:0.5}}>E2E ENCRYPTED SECURE MESSAGING</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const AV_COLORS = [
   {bg:'rgba(204,0,0,.15)',fg:'#e63333',br:'rgba(204,0,0,.3)'},
   {bg:'rgba(59,130,246,.12)',fg:'#60a5fa',br:'rgba(59,130,246,.25)'},
@@ -109,15 +186,63 @@ export default function VanishText() {
   const [addContactOpen,setAddContactOpen]=useState(false);
   const [newContactName,setNewContactName]=useState('');
   const [newContactPhone,setNewContactPhone]=useState('');
+  
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [socket, setSocket] = useState(null);
+  const [userToken, setUserToken] = useState(null); 
+  const [expoPushToken, setExpoPushToken] = useState('');
+
   const { keys, encryptMessage, decryptMessage, generateKeys } = useCrypto();
   useEffect(()=>{ generateKeys(); },[generateKeys]);
+
+  // Push Notification Setup
+  useEffect(() => {
+    async function registerForPush() {
+      // 1. Web fallback
+      if (typeof window !== 'undefined' && "Notification" in window) {
+        if (Notification.permission !== "denied" && Notification.permission !== "granted") {
+          Notification.requestPermission();
+        }
+      }
+      // 2. Native Expo Setup
+      try {
+        if (Device.isDevice) {
+          const { status: existingStatus } = await Notifications.getPermissionsAsync();
+          let finalStatus = existingStatus;
+          if (existingStatus !== 'granted') {
+            const { status } = await Notifications.requestPermissionsAsync();
+            finalStatus = status;
+          }
+          if (finalStatus === 'granted') {
+            const token = await Notifications.getExpoPushTokenAsync({ projectId: 'vanishtext-rn' }).catch(()=>null);
+            if (token) setExpoPushToken(token.data);
+          }
+        }
+      } catch (e) {
+        console.log('Expo Push err (normal if running in pure web mode):', e);
+      }
+    }
+    registerForPush();
+  }, []);
   const callRef=useRef(null);
   const connRef=useRef(null);
   const nref=useRef(200);
   const listRef=useRef(null);
 
-  // Socket.IO Integration
+  // Socket.IO Connection (JWT Auth)
   useEffect(() => {
+    if (!isAuthenticated || !userToken) return;
+    const s = io(SERVER, {
+      transports: ['websocket'],
+      auth: { token: userToken }
+    });
+    setSocket(s);
+    return () => s.disconnect();
+  }, [userToken, isAuthenticated]);
+
+  // Socket.IO Message Handler
+  useEffect(() => {
+    if (!socket) return;
     const handleMessage = (m) => {
       setConvs(p => {
         const convId = m.cid || 'c1';
@@ -129,10 +254,17 @@ export default function VanishText() {
         c[unreadKey] = (c[unreadKey] || 0) + 1;
         return { ...p, [convId]: c };
       });
+      
+      // Trigger local OS notification if app is in background (Web & Native)
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden' && "Notification" in window && Notification.permission === "granted") {
+        new window.Notification("VanishText", { body: "🔒 Encrypted Message Received" });
+      } else {
+        Notifications.scheduleNotificationAsync({ content: { title: "VanishText", body: "🔒 Encrypted Message" }, trigger: null }).catch(()=>{});
+      }
     };
     socket.on('receive_message', handleMessage);
     return () => socket.off('receive_message', handleMessage);
-  }, []);
+  }, [socket]);
 
   // TTL engine
   useEffect(()=>{
@@ -181,7 +313,7 @@ export default function VanishText() {
   },[convs,openConv]);
 
   const sendMsg=useCallback(async (text,cid=activeConv)=>{
-    if(!text.trim()||!cid) return;
+    if(!text.trim()||!cid||!socket) return;
     const cipherText = await encryptMessage(text.trim(), 'pub_key');
     const m={id:nid(),type:'text',text:cipherText,sender:view,time:now(),status:'sent',isRead:false,ttl:0,hasTtl:false,enc:rnd(6)+'…'+rnd(8), cid};
     
@@ -192,7 +324,7 @@ export default function VanishText() {
     setConvs(p=>{const c={...p[cid]};c.messages=[...c.messages,m];c[view==='alice'?'uB':'uA']=(c[view==='alice'?'uB':'uA']||0)+1;return{...p,[cid]:c};});
     setInput('');
     setTimeout(()=>setConvs(p=>{const c={...p[cid]};c.messages=c.messages.map(x=>x.id===m.id?{...x,status:'delivered'}:x);return{...p,[cid]:c};}),700);
-  },[activeConv,view,encryptMessage]);
+  },[activeConv,view,encryptMessage,socket]);
 
   const readMsg=useCallback(async (cid,mid)=>{
     let targetMsg = null;
@@ -208,8 +340,14 @@ export default function VanishText() {
     pushN('m','👁','Decrypted','Disappears in 3 minutes');
   },[view,pushN,decryptMessage]);
 
-  const startCall=useCallback((name)=>{
-    setCallOverlay({name});setCallSec(0);setCallConn(false);setCtrls({mute:false,spk:false,vid:false});
+  const startCall=useCallback(async (name, isVideo=false)=>{
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
+      stream.getTracks().forEach(t=>t.stop()); // request permission but release hardware instantly for the UI mock
+    } catch(err) {
+      console.log('Media access denied:', err);
+    }
+    setCallOverlay({name});setCallSec(0);setCallConn(false);setCtrls({mute:false,spk:false,vid:isVideo});
     connRef.current=setTimeout(()=>setCallConn(true),2000);
   },[]);
   const endCall=useCallback(()=>{
@@ -229,14 +367,14 @@ export default function VanishText() {
       if(!convs[cid]) setConvs(p=>({...p,[cid]:{id:cid,name:ct.name,phone:ct.phone,online:ct.online,messages:[],uA:0,uB:0}}));
       setTimeout(()=>{
         const m={id:nid(), text:cipherText, sender:view, time:now(), status:'sent', isRead:false, ttl:0, hasTtl:false, enc:rnd(6)+'…'+rnd(8), bc:true, cid, ...mediaProps};
-        socket.emit('send_message', m);
+        if(socket) socket.emit('send_message', m);
         setConvs(p=>{const c={...p[cid]||{id:cid,name:ct.name,phone:ct.phone,online:ct.online,messages:[],uA:0,uB:0}};c.messages=[...c.messages,m];c[view==='alice'?'uB':'uA']=(c[view==='alice'?'uB':'uA']||0)+1;return{...p,[cid]:c};});
         setTimeout(()=>setConvs(p=>({...p,[cid]:{...p[cid],messages:p[cid].messages.map(x=>x.id===m.id?{...x,status:'delivered'}:x)}})),700);
       },i*220);
     });
     pushN('m','📣',`Broadcast sent`,`To ${selected.size} contacts`);
     setNewMsgOpen(false);setBcMode(false);setBcText('');setSelected(new Set());setMediaPreview(null);
-  },[bcText,selected,view,encryptMessage,mediaPreview,pushN]);
+  },[bcText,selected,view,encryptMessage,mediaPreview,pushN,socket]);
 
   const conv=activeConv?convs[activeConv]:null;
   const convList=Object.values(convs);
@@ -262,6 +400,15 @@ export default function VanishText() {
   return (
     <div style={{position:'relative',width:'100%',maxWidth:430,height:760,margin:'0 auto',background:C.bg,borderRadius:16,overflow:'hidden',fontFamily:F,color:C.text,display:'flex',flexDirection:'column',border:`1px solid ${C.border}`,boxShadow:'0 8px 40px rgba(0,0,0,.8)'}}>
       <style>{`@keyframes rp{0%{transform:scale(.9);opacity:1}100%{transform:scale(1.1);opacity:0}}@keyframes gp{0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,.4)}50%{box-shadow:0 0 0 3px transparent}}*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}::-webkit-scrollbar{display:none}textarea,input{outline:none;-webkit-appearance:none}`}</style>
+
+      {/* LOGIN OVERLAY */}
+      {!isAuthenticated && (
+        <LoginScreen onLogin={({ token }) => {
+          setUserToken(token);
+          setIsAuthenticated(true);
+        }} />
+      )}
+
       <Notifs items={notifs}/>
       <input ref={fileInputRef} type="file" style={{display:'none'}} onChange={e=>{
         const f=e.target.files[0];if(!f)return;
@@ -748,8 +895,8 @@ export default function VanishText() {
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,padding:'0 20px 16px'}}>
                 {[
                   {label:'Message',bg:C.rdim,color:C.rb,icon:<MsgIcon stroke="currentColor" w={20}/>,action:()=>{startConv(detailContact);setDetailContact(null);}},
-                  {label:'Call',bg:C.gdim,color:C.green,icon:<PhoneIcon stroke="currentColor" w={20}/>,action:()=>{startCall(detailContact.name);setDetailContact(null);}},
-                  {label:'Video',bg:C.bdim,color:C.blue,icon:<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>,action:()=>setDetailContact(null)},
+                  {label:'Call',bg:C.gdim,color:C.green,icon:<PhoneIcon stroke="currentColor" w={20}/>,action:()=>{startCall(detailContact.name, false);setDetailContact(null);}},
+                  {label:'Video',bg:C.bdim,color:C.blue,icon:<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>,action:()=>{startCall(detailContact.name, true);setDetailContact(null);}},
                 ].map(btn=>(
                   <button key={btn.label} onClick={btn.action} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:6,cursor:'pointer',border:'none',background:'transparent'}}>
                     <div style={{width:52,height:52,borderRadius:'50%',background:btn.bg,color:btn.color,display:'flex',alignItems:'center',justifyContent:'center'}}>{btn.icon}</div>
@@ -822,14 +969,20 @@ export default function VanishText() {
                             <span style={{fontSize:12,fontWeight:700,fontFamily:F}}>File</span>
                           </button>
                           
-                          <button onClick={()=>{
+                          <button onClick={async ()=>{
                             if(recording){
                               clearInterval(recTimerRef.current);
                               if(recSec>0) setMediaPreview({type:'audio',name:`Voice note · ${fmt(recSec)}`,icon:'🎙️',size:'Audio',dur:recSec});
                               setRecording(false);setRecSec(0);
                             }else{
-                              setRecording(true);setRecSec(0);
-                              recTimerRef.current=setInterval(()=>setRecSec(s=>s+1),1000);
+                              try {
+                                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                                stream.getTracks().forEach(t=>t.stop());
+                                setRecording(true);setRecSec(0);
+                                recTimerRef.current=setInterval(()=>setRecSec(s=>s+1),1000);
+                              } catch(err) {
+                                pushN('s','⚠️','Microphone denied','Check your device settings.');
+                              }
                             }
                           }} style={{display:'flex',alignItems:'center',gap:6,background:recording?'rgba(204,0,0,.15)':'rgba(255,255,255,.06)',border:`1px solid ${recording?'rgba(204,0,0,.3)':C.border}`,borderRadius:10,padding:'6px 10px',color:recording?C.red:C.white,cursor:'pointer',transition:'all .15s'}}>
                             <span style={{fontSize:18}}>{recording?'🔴':'🎙️'}</span>
