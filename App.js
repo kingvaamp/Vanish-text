@@ -12,7 +12,7 @@ Notifications.setNotificationHandler({
   }),
 });
 
-const SERVER = typeof __DEV__ !== 'undefined' && __DEV__ ? 'http://localhost:3001' : 'https://vanishtext-backend.railway.app';
+const SERVER = typeof window !== 'undefined' && window.location.hostname !== 'localhost' ? window.location.origin : 'http://localhost:3001';
 
 const C = {
   bg:'#080808',s1:'#111',s2:'#181818',s3:'#222',s4:'#2a2a2a',s5:'#333',

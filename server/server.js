@@ -9,7 +9,7 @@ app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 
 // Configuration Redis avec Fallback en mémoire
 let useRedis = false;
@@ -57,10 +57,13 @@ io.on('connection', (socket) => {
   });
 });
 
-app.get('/', (req, res) => {
-  res.send('VanishText Backend is running (Redis + Socket.io)');
+const path = require('path');
+app.use(express.static(path.join(__dirname, 'dist')));
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Serveur backend démarré sur http://localhost:${PORT}`);
 });
