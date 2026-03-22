@@ -32,35 +32,37 @@ redisClient.connect().then(() => {
 // Fallback Memoire
 const memoryDB = { messages: [] };
 
+// Annuaire Public des Utilisateurs Actifs (PKI)
+const activeUsers = {}; // socket.id -> { publicKey }
+
 io.on('connection', (socket) => {
   console.log('Socket connecté:', socket.id);
 
+  // Étape 2: Alice enregistre sa clé publique sur l'annuaire
+  socket.on('register_identity', (publicKey) => {
+    if (!publicKey || typeof publicKey !== 'string') return;
+    activeUsers[socket.id] = { publicKey };
+    console.log(`🔑 Clé publique enregistrée pour ${socket.id}`);
+    
+    // Diffuser la mise à jour de l'annuaire à tout le monde
+    io.emit('directory_update', activeUsers);
+  });
+
   socket.on('send_message', async (data) => {
-    // Sécurité : Validation stricte contre les injections malveillantes (Anti-Crash)
-    if (!data || typeof data !== 'object' || !data.id || !data.text || !data.sender) {
-      console.log('⚠️ Rejet sécuritaire d\'une charge utile de socket non conforme ou potentiellement malveillante.');
+    // Sécurité: Le payload est désormais un objet contenant les messages chiffrés pour CHAQUE destinataire
+    if (!data || typeof data !== 'object' || !data.id || typeof data.ciphertexts !== 'object' || !data.sender) {
+      console.log('⚠️ Rejet sécuritaire: Payload malformé ou non-N-Way E2E.');
       return;
     }
 
-    // data contient: id, type, text (chiffré), sender, time, enc
-    console.log('Message reçu du client:', data.id);
-    
-    // Sauvegarde Redis ou memoire
-    if (useRedis) {
-      await redisClient.lPush('messages:global', JSON.stringify(data));
-      // Optionnel: Ne garder que les 100 derniers
-      await redisClient.lTrim('messages:global', 0, 99); 
-    } else {
-      memoryDB.messages.push(data);
-      if (memoryDB.messages.length > 100) memoryDB.messages.shift();
-    }
-
-    // Broadcast à tous les autres clients
+    console.log(`Relais du message ${data.id} chiffré pour ${Object.keys(data.ciphertexts).length} destinataires.`);
     socket.broadcast.emit('receive_message', data);
   });
 
   socket.on('disconnect', () => {
     console.log('Socket déconnecté:', socket.id);
+    delete activeUsers[socket.id];
+    io.emit('directory_update', activeUsers);
   });
 });
 

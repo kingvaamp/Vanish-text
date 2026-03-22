@@ -1,7 +1,9 @@
+import 'react-native-quick-crypto/shim';
 import { useState, useEffect, useRef, useCallback } from "react";
 import useCrypto from './useCrypto';
 import { io } from 'socket.io-client';
 import * as Notifications from 'expo-notifications';
+import { View, Text, TextInput, TouchableOpacity, ScrollView, Animated, Dimensions, Platform, LogBox, StatusBar } from 'react-native';
 import * as Device from 'expo-device';
 
 Notifications.setNotificationHandler({
@@ -193,8 +195,9 @@ export default function VanishText() {
   const [socket, setSocket] = useState(null);
   const [userToken, setUserToken] = useState(null); 
   const [expoPushToken, setExpoPushToken] = useState('');
+  const [directory, setDirectory] = useState({});
 
-  const { keys, encryptMessage, decryptMessage, generateKeys } = useCrypto();
+  const { keys, encryptMessageForDirectory, decryptMessageWithSenderKey, generateKeys } = useCrypto();
   useEffect(()=>{ generateKeys(); },[generateKeys]);
 
   // Push Notification Setup
@@ -231,16 +234,23 @@ export default function VanishText() {
   const nref=useRef(200);
   const listRef=useRef(null);
 
-  // Socket.IO Connection (JWT Auth)
+  // Socket.IO Connection & PKI Directory Hooks
   useEffect(() => {
     if (!isAuthenticated || !userToken) return;
-    const s = io(SERVER, {
-      transports: ['websocket'],
-      auth: { token: userToken }
-    });
+    const s = io(SERVER, { transports: ['websocket'], auth: { token: userToken } });
     setSocket(s);
+
+    s.on('directory_update', (dir) => setDirectory(dir));
+
     return () => s.disconnect();
   }, [userToken, isAuthenticated]);
+
+  // Enregistrement asynchrone de l'Identité Publique
+  useEffect(() => {
+    if (socket && socket.connected && keys?.type === 'identity' && keys?.kp?.publicB64) {
+      socket.emit('register_identity', keys.kp.publicB64);
+    }
+  }, [socket, keys]);
 
   // Socket.IO Message Handler
   useEffect(() => {
@@ -316,17 +326,21 @@ export default function VanishText() {
 
   const sendMsg=useCallback(async (text,cid=activeConv)=>{
     if(!text.trim()||!cid||!socket) return;
-    const cipherText = await encryptMessage(text.trim(), 'pub_key');
-    const m={id:nid(),type:'text',text:cipherText,sender:view,time:now(),status:'sent',isRead:false,ttl:0,hasTtl:false,enc:rnd(6)+'…'+rnd(8), cid};
     
-    // Serveur
+    // N-Way Chiffrement asynchrone (Point-to-Point pour CHAQUE socket connecté)
+    const ciphertexts = await encryptMessageForDirectory(text.trim(), directory) || {};
+    
+    const m={id:nid(),type:'text',text:'[Message Chiffré]',ciphertexts,senderPublicKey:keys?.kp?.publicB64,sender:view,time:now(),status:'sent',isRead:false,ttl:0,hasTtl:false,enc:rnd(6)+'…'+rnd(8), cid};
+    
+    // Relais Serveur
     socket.emit('send_message', m);
 
-    // Local
-    setConvs(p=>{const c={...p[cid]};c.messages=[...c.messages,m];c[view==='alice'?'uB':'uA']=(c[view==='alice'?'uB':'uA']||0)+1;return{...p,[cid]:c};});
+    // Interface Locale (L'expéditeur voit toujours son message en clair)
+    const mLocal = { ...m, text: text.trim() };
+    setConvs(p=>{const c={...p[cid]};c.messages=[...c.messages,mLocal];c[view==='alice'?'uB':'uA']=(c[view==='alice'?'uB':'uA']||0)+1;return{...p,[cid]:c};});
     setInput('');
     setTimeout(()=>setConvs(p=>{const c={...p[cid]};c.messages=c.messages.map(x=>x.id===m.id?{...x,status:'delivered'}:x);return{...p,[cid]:c};}),700);
-  },[activeConv,view,encryptMessage,socket]);
+  },[activeConv,view,encryptMessageForDirectory,directory,keys,socket]);
 
   const readMsg=useCallback(async (cid,mid)=>{
     let targetMsg = null;
@@ -334,13 +348,20 @@ export default function VanishText() {
     if (!targetMsg || targetMsg.isRead) return;
     
     let decryptedText = targetMsg.text;
-    if (targetMsg.text && targetMsg.text.startsWith('enc:')) {
-      decryptedText = await decryptMessage(targetMsg.text);
+    
+    // Si c'est un message entrant avec N-Way cryptographie
+    if (targetMsg.ciphertexts && socket) {
+      const myCipher = targetMsg.ciphertexts[socket.id];
+      if (myCipher && targetMsg.senderPublicKey) {
+         decryptedText = await decryptMessageWithSenderKey(myCipher, targetMsg.senderPublicKey);
+      } else {
+         decryptedText = "[Réseau Indisponible lors de l'envoi / Non-Déchiffrable]";
+      }
     }
     
     setConvs(p=>{const c={...p[cid]};c.messages=c.messages.map(m=>m.id===mid&&!m.isRead?{...m,text:decryptedText,isRead:true,status:m.sender!==view?'read':m.status,ttl:180,hasTtl:true}:m);return{...p,[cid]:c};});
     pushN('m','👁','Decrypted','Disappears in 3 minutes');
-  },[view,pushN,decryptMessage]);
+  },[view,pushN,decryptMessageWithSenderKey,socket]);
 
   const startCall=useCallback(async (name, isVideo=false)=>{
     try {
