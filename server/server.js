@@ -36,6 +36,12 @@ io.on('connection', (socket) => {
   console.log('Socket connecté:', socket.id);
 
   socket.on('send_message', async (data) => {
+    // Sécurité : Validation stricte contre les injections malveillantes (Anti-Crash)
+    if (!data || typeof data !== 'object' || !data.id || !data.text || !data.sender) {
+      console.log('⚠️ Rejet sécuritaire d\'une charge utile de socket non conforme ou potentiellement malveillante.');
+      return;
+    }
+
     // data contient: id, type, text (chiffré), sender, time, enc
     console.log('Message reçu du client:', data.id);
     

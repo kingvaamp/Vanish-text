@@ -48,9 +48,11 @@ function LoginScreen({ onLogin }) {
                 <input type="tel" value={phone} onChange={e=>setPhone(e.target.value)} placeholder="+1 234 567 8900" style={{width:'100%',background:'transparent',border:'none',color:'#fff',fontSize:18,outline:'none',fontFamily:F}} />
               </div>
               <button onClick={()=>{
-                if(phone.length<5) return; setLoading(true);
+                const cleanPhone = phone.replace(/[^\d+]/g, '');
+                if(cleanPhone.length < 8) return; 
+                setLoading(true);
                 setTimeout(()=>{setLoading(false);setStep('code');}, 1000);
-              }} disabled={loading || phone.length<5} style={{width:'100%',padding:'16px',borderRadius:12,fontSize:16,fontWeight:700,background:phone.length>=5?C.red:C.s4,color:phone.length>=5?'#fff':C.muted,border:'none',cursor:phone.length>=5?'pointer':'not-allowed',transition:'all 0.2s',opacity:loading?0.7:1}}>
+              }} disabled={loading || phone.replace(/[^\d+]/g, '').length < 8} style={{width:'100%',padding:'16px',borderRadius:12,fontSize:16,fontWeight:700,background:phone.replace(/[^\d+]/g, '').length>=8?C.red:C.s4,color:phone.replace(/[^\d+]/g, '').length>=8?'#fff':C.muted,border:'none',cursor:phone.replace(/[^\d+]/g, '').length>=8?'pointer':'not-allowed',transition:'all 0.2s',opacity:loading?0.7:1}}>
                 {loading ? 'Sending SMS...' : 'Continue'}
               </button>
             </>
