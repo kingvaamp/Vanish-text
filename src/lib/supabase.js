@@ -3,8 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
 // ⚠️ REMPLACEZ CES VALEURS PAR CELLES DE VOTRE DASHBOARD SUPABASE ⚠️
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'REMPLACEZ_PAR_VOTRE_URL_SUPABASE';
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'REMPLACEZ_PAR_VOTRE_CLE_ANON_SUPABASE';
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
