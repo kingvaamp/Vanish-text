@@ -58,8 +58,8 @@ io.on('connection', (socket) => {
   });
 });
 
-// Serve static files from the dist folder
-app.use(express.static(path.join(__dirname, 'dist')));
+// Serve static files from the root dist folder
+app.use(express.static(path.join(__dirname, '../dist')));
 
 app.get('/api', (req, res) => {
   res.send('VanishText Backend is running (Redis + Socket.io)');
@@ -67,7 +67,7 @@ app.get('/api', (req, res) => {
 
 // Fallback to index.html for React Router (SPA routing)
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+  res.sendFile(path.join(__dirname, '../dist', 'index.html'));
 });
 
 server.listen(PORT, '0.0.0.0', () => {
