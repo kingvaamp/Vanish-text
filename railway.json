@@ -1,0 +1,10 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "npm install && npx expo export -p web && rm -rf server/dist && cp -r dist server/dist && cd server && npm install"
+  },
+  "deploy": {
+    "startCommand": "cd server && node server.js"
+  }
+}
