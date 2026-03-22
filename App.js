@@ -406,7 +406,7 @@ export default function VanishText() {
     
     setConvs(p=>{const c={...p[cid]};c.messages=c.messages.map(m=>m.id===mid&&!m.isRead?{...m,text:decryptedText,isRead:true,status:m.sender!==view?'read':m.status,ttl:180,hasTtl:true}:m);return{...p,[cid]:c};});
     pushN('m','👁','Decrypted','Disappears in 3 minutes');
-  },[view,pushN,decryptMessageWithSenderKey,socket]);
+  },[view,pushN,decryptMessageWithSenderKey,session,directory]);
 
   const startCall=useCallback(async (name, isVideo=false)=>{
     try {
@@ -427,22 +427,30 @@ export default function VanishText() {
   const sendBc=useCallback(async ()=>{
     if(!bcText.trim() && !mediaPreview) return;
     const baseText = bcText.trim() || `${mediaPreview?.icon} ${mediaPreview?.name}`;
-    const cipherText = await encryptMessage(baseText, 'pub_key');
+    const ciphertexts = await encryptMessageForDirectory(baseText, directory) || {};
     const mediaProps = mediaPreview ? { mediaName: mediaPreview.name, mediaUrl: mediaPreview.url, mediaIcon: mediaPreview.icon, type: mediaPreview.type, dur: mediaPreview.dur } : { type: 'text' };
     
     [...selected].forEach((cid,i)=>{
       const ct=CONTACTS.find(c=>c.id===cid);if(!ct) return;
       if(!convs[cid]) setConvs(p=>({...p,[cid]:{id:cid,name:ct.name,phone:ct.phone,online:ct.online,messages:[],uA:0,uB:0}}));
       setTimeout(()=>{
-        const m={id:nid(), text:cipherText, sender:view, time:now(), status:'sent', isRead:false, ttl:0, hasTtl:false, enc:rnd(6)+'…'+rnd(8), bc:true, cid, ...mediaProps};
-        if(socket) socket.emit('send_message', m);
+        const localId = nid();
+        const m={id:localId, text:baseText, sender:session?.user?.id || view, time:now(), status:'sent', isRead:false, ttl:0, hasTtl:false, enc:rnd(6)+'…'+rnd(8), bc:true, cid, ...mediaProps};
+        
+        supabase.from('messages').insert([{
+          id: localId,
+          sender_id: session?.user?.id,
+          ciphertexts,
+          cid
+        }]).then(({ error }) => { if(error) console.error("Send error", error); });
+
         setConvs(p=>{const c={...p[cid]||{id:cid,name:ct.name,phone:ct.phone,online:ct.online,messages:[],uA:0,uB:0}};c.messages=[...c.messages,m];c[view==='alice'?'uB':'uA']=(c[view==='alice'?'uB':'uA']||0)+1;return{...p,[cid]:c};});
         setTimeout(()=>setConvs(p=>({...p,[cid]:{...p[cid],messages:p[cid].messages.map(x=>x.id===m.id?{...x,status:'delivered'}:x)}})),700);
       },i*220);
     });
     pushN('m','📣',`Broadcast sent`,`To ${selected.size} contacts`);
     setNewMsgOpen(false);setBcMode(false);setBcText('');setSelected(new Set());setMediaPreview(null);
-  },[bcText,selected,view,encryptMessage,mediaPreview,pushN,socket]);
+  },[bcText,selected,view,encryptMessageForDirectory,directory,mediaPreview,pushN,session,convs,CONTACTS]);
 
   const conv=activeConv?convs[activeConv]:null;
   const convList=Object.values(convs);
@@ -472,7 +480,6 @@ export default function VanishText() {
       {/* LOGIN OVERLAY */}
       {!isAuthenticated && (
         <LoginScreen onLogin={({ token }) => {
-          setUserToken(token);
           setIsAuthenticated(true);
         }} />
       )}
