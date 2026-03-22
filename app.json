@@ -2,6 +2,7 @@
   "expo": {
     "name": "tempapp",
     "version": "1.0.0",
+    "entryPoint": "./index.js",
     "scheme": "vanishtext",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
