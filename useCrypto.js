@@ -22,33 +22,39 @@ export default function useCrypto() {
     }
   }, []);
 
-  // Chiffre le texte N fois pour N destinataires
+  // Chiffre le texte N fois avec PFS (Perfect Forward Secrecy - Ephemeral Sender Key)
   const encryptMessageForDirectory = useCallback(async (plainText, directory) => {
     // directory format: { 'socketId': { publicKey: 'B64...' }, ... }
     if (!plainText || keys?.type !== 'identity') return null;
+    
+    // 1. PFS: Alice génère une paire de clés éphémères jetables pour CET ENVOI spécifique
+    const ephemeralKeys = await generateKeyPair();
     
     const ciphertexts = {};
     for (const [peerSocketId, peerData] of Object.entries(directory)) {
       try {
         if (!peerData.publicKey) continue;
         
-        // 1. Convertir la clé publique B64 de Bob en objet CryptoKey
+        // 2. Convertir la clé publique B64 de Bob en objet CryptoKey
         const peerKeyObj = await importPublicKey(peerData.publicKey);
         
-        // 2. Dériver le secret partagé ECDH (Clé_Privée_Alice + Clé_Publ_Bob)
-        const sharedSecret = await ecdh(keys.kp.privateKey, peerKeyObj);
+        // 3. PFS: Dériver le secret avec la Clé ÉPHÉMÈRE d'Alice + Clé Publique STATIQUE de Bob
+        const sharedSecret = await ecdh(ephemeralKeys.privateKey, peerKeyObj);
         
-        // 3. Passer dans le module HKDF pour obtenir la clé AES-GCM
+        // 4. Passer dans le module HKDF pour obtenir la clé AES-GCM
         const aesKeyBuf = await hkdf(sharedSecret, null, 'VanishText-Session', 32);
         
-        // 4. Chiffrer le message pour ce socket spécifiquement
+        // 5. Chiffrer le payload
         const encData = await encrypt(aesKeyBuf, plainText);
-        ciphertexts[peerSocketId] = `enc:ecdh-aes-gcm:v4:${encData.iv}:${encData.ciphertext}`;
+        
+        // 6. PFS: Joindre la clé publique éphémère d'Alice directement à la charge utile (v5)
+        ciphertexts[peerSocketId] = `enc:ecdh-aes-gcm:v5:${encData.iv}:${encData.ciphertext}:${ephemeralKeys.publicB64}`;
       } catch (e) {
         console.error(`Erreur de chiffrement (Point-to-Point) vers ${peerSocketId}`);
       }
     }
-    return ciphertexts; // Renvoie l'objet associatif des N messages chiffrés
+    // La clé privée éphémère est IMMÉDIATEMENT détruite. Aucun message déchiffrable rétroactivement.
+    return ciphertexts; 
   }, [keys]);
 
   // Déchiffre le message reçu (qui contient un paquet de ciphertexts)
@@ -89,20 +95,26 @@ export default function useCrypto() {
     }
   }, [keys]);
 
-  // Déchiffre le message avec la clé publique de l'émetteur explicitly fournie
-  const decryptMessageWithSenderKey = useCallback(async (myCipherText, senderPublicKeyB64) => {
+  // Déchiffre le message avec la clé publique éphémère (v5) ou statique (v4)
+  const decryptMessageWithSenderKey = useCallback(async (myCipherText, fallbackSenderPublicKeyB64) => {
       try {
         const parts = myCipherText.split(':');
+        const version = parts[2];
         const iv = parts[3];
         const ciphertext = parts[4];
         
-        const senderKeyObj = await importPublicKey(senderPublicKeyB64);
+        // v5 implémente le Perfect Forward Secrecy : la clé éphémère de l'émetteur est embarquée !
+        const senderKeyToUse = (version === 'v5' && parts[5]) ? parts[5] : fallbackSenderPublicKeyB64;
+        
+        const senderKeyObj = await importPublicKey(senderKeyToUse);
+        
+        // Bob dérive le secret avec sa Clé Privée STATIQUE + La Clé Publique ÉPHÉMÈRE d'Alice
         const sharedSecret = await ecdh(keys.kp.privateKey, senderKeyObj);
         const aesKeyBuf = await hkdf(sharedSecret, null, 'VanishText-Session', 32);
         
         return await decrypt(aesKeyBuf, iv, ciphertext);
       } catch (e) {
-        console.log("Échec de déchiffrement asymétrique");
+        console.log("Échec de déchiffrement PFS asymétrique");
         return "[Erreur]";
       }
   }, [keys]);
