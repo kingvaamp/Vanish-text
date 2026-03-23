@@ -36,10 +36,41 @@ CREATE INDEX idx_messages_read_at ON public.messages(read_at);
 -- Enable RLS
 ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
 
--- Les utilisateurs connectés peuvent insérer un message
-CREATE POLICY "Authenticated users can insert messages" ON public.messages FOR INSERT WITH CHECK (auth.role() = 'authenticated');
--- Les utilisateurs connectés peuvent lire les messages (le vrai filtre se fait au déchiffrement mathématique local)
-CREATE POLICY "Authenticated users can read messages" ON public.messages FOR SELECT USING (auth.role() = 'authenticated');
+-- Les utilisateurs connectés peuvent insérer un message UNIQUEMENT en leur nom propre (Anti-Spoofing)
+CREATE POLICY "Users can insert their own messages" ON public.messages 
+  FOR INSERT WITH CHECK (auth.uid() = sender_id);
+
+-- Les utilisateurs ne peuvent lire que les messages qu'ils ont envoyés ou dont ils sont destinataires
+-- Note: Pour un anonymat maximal, on pourrait laisser SELECT public, mais restreindre ici ajoute une couche de sécurité.
+CREATE POLICY "Users can read own context messages" ON public.messages 
+  FOR SELECT USING (
+    auth.uid() = sender_id OR 
+    ciphertexts ? auth.uid()::text
+  );
+
+-- 3. Limiteur de Débit (Rate Limiting) côté Serveur
+-- Empêche un utilisateur de spammer la base de données (max 20 msg / min)
+CREATE OR REPLACE FUNCTION public.check_message_rate()
+RETURNS TRIGGER AS $$
+DECLARE
+  msg_count INTEGER;
+BEGIN
+  SELECT count(*) INTO msg_count 
+  FROM public.messages 
+  WHERE sender_id = auth.uid() 
+  AND created_at > (now() - interval '1 minute');
+
+  IF msg_count >= 20 THEN
+    RAISE EXCEPTION 'Rate limit exceeded: Max 20 messages per minute.';
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER tr_check_message_rate
+BEFORE INSERT ON public.messages
+FOR EACH ROW EXECUTE FUNCTION public.check_message_rate();
 
 
 -- 3. Fonction pour mettre à jour automatiquement le "updated_at"
