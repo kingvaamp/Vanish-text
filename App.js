@@ -4,6 +4,8 @@ import { supabase } from './src/lib/supabase';
 import * as Notifications from 'expo-notifications';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Animated, Dimensions, Platform, LogBox, StatusBar } from 'react-native';
 import * as Device from 'expo-device';
+import * as ScreenCapture from 'expo-screen-capture';
+import { useIsFocused } from '@react-navigation/native';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -220,6 +222,31 @@ export default function VanishText() {
 
   const { keys, encryptMessageForDirectory, decryptMessageWithSenderKey, generateKeys, getSafetyNumber } = useCrypto();
   useEffect(()=>{ generateKeys(); },[generateKeys]);
+
+  // ── 🛡️ SCREENSHOT PROTECTION (MOBILE & WEB) ──
+  const [isWebBlurred, setIsWebBlurred] = useState(false);
+  useEffect(() => {
+    // 1. Mobile Hardware Hook
+    if (!settings.sca) {
+      ScreenCapture.preventScreenCaptureAsync().catch(()=>null);
+    } else {
+      ScreenCapture.allowScreenCaptureAsync().catch(()=>null);
+    }
+
+    // 2. Web Stealth Mode (Blur on Blur)
+    if (typeof window !== 'undefined' && !settings.sca) {
+      const onBlur = () => setIsWebBlurred(true);
+      const onFocus = () => setIsWebBlurred(false);
+      window.addEventListener('blur', onBlur);
+      window.addEventListener('focus', onFocus);
+      return () => {
+        window.removeEventListener('blur', onBlur);
+        window.removeEventListener('focus', onFocus);
+      };
+    } else {
+      setIsWebBlurred(false);
+    }
+  }, [settings.sca]);
 
   // Push Notification Setup
   useEffect(() => {
@@ -510,7 +537,11 @@ export default function VanishText() {
   };
 
   return (
-    <div style={{position:'relative',width:'100%',maxWidth:430,height:760,margin:'0 auto',background:C.bg,borderRadius:16,overflow:'hidden',fontFamily:F,color:C.text,display:'flex',flexDirection:'column',border:`1px solid ${C.border}`,boxShadow:'0 8px 40px rgba(0,0,0,.8)'}}>
+    <div style={{
+      position:'relative',width:'100%',maxWidth:430,height:760,margin:'0 auto',background:C.bg,borderRadius:16,overflow:'hidden',fontFamily:F,color:C.text,display:'flex',flexDirection:'column',border:`1px solid ${C.border}`,boxShadow:'0 8px 40px rgba(0,0,0,.8)',
+      filter: isWebBlurred ? 'blur(15px)' : 'none',
+      transition: 'filter 0.3s'
+    }}>
       <style>{`@keyframes rp{0%{transform:scale(.9);opacity:1}100%{transform:scale(1.1);opacity:0}}@keyframes gp{0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,.4)}50%{box-shadow:0 0 0 3px transparent}}*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}::-webkit-scrollbar{display:none}textarea,input{outline:none;-webkit-appearance:none}`}</style>
 
       {/* LOGIN OVERLAY */}
