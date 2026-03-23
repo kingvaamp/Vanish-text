@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
-import { generateKeyPair, importPublicKey, ecdh, hkdf, encrypt, decrypt } from './src/crypto/primitives';
+import { generateKeyPair, importPublicKey, importPrivateKey, ecdh, hkdf, encrypt, decrypt } from './src/crypto/primitives';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /**
  * useCrypto Hook - X3DH & N-Way Point-to-Point
@@ -9,15 +10,39 @@ export default function useCrypto() {
   const [keys, setKeys] = useState(null);
   const ratchetCounter = useRef(0);
 
-  // Étape 2: Génère LA clé d'identité asymétrique unique d'Alice.
+  // Étape 2: Récupération de l'identité persistante (ou génération d'une nouvelle)
   const generateKeys = useCallback(async () => {
     try {
+      // 1. Tente de récupérer la paire d'Identité Asymétrique existante dans le Local Storage
+      const storedStr = await AsyncStorage.getItem('vanish_identity_keypair');
+      if (storedStr) {
+        const storedKeys = JSON.parse(storedStr);
+        // Restaure les objets WebCrypto natifs depuis le JWK (Private) et B64 (Public)
+        const privateKey = await importPrivateKey(storedKeys.privateJwk);
+        const publicKey = await importPublicKey(storedKeys.publicB64);
+        
+        const k = { 
+          type: 'identity', 
+          kp: { publicKey, privateKey, publicB64: storedKeys.publicB64, privateJwk: storedKeys.privateJwk } 
+        };
+        setKeys(k);
+        return k;
+      }
+
+      // 2. Si aucune clé n'existe pour cet appareil, on génère une nouvelle paire mathématique pure
       const myKeys = await generateKeyPair();
+      
+      // 3. Sauvegarde persistante immédiate pour survivre aux rechargements web et fermetures de l'app Mobile
+      await AsyncStorage.setItem('vanish_identity_keypair', JSON.stringify({
+         publicB64: myKeys.publicB64,
+         privateJwk: myKeys.privateJwk
+      }));
+
       const k = { type: 'identity', kp: myKeys };
       setKeys(k);
       return k; // Retourne l'objet avec kp.publicB64 pour l'envoyer au serveur
     } catch (e) {
-      console.error("Erreur de génération d'Identité:", e);
+      console.error("Erreur de génération/Restauration d'Identité:", e);
       return { type: 'fallback' };
     }
   }, []);
