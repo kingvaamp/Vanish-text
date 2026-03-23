@@ -48,11 +48,17 @@ function LoginScreen({ onLogin }) {
                 <div style={{fontSize:11,color:C.muted,fontWeight:700,marginBottom:4,textTransform:'uppercase',letterSpacing:1}}>Phone Number</div>
                 <input type="tel" value={phone} onChange={e=>setPhone(e.target.value)} placeholder="+1 234 567 8900" style={{width:'100%',background:'transparent',border:'none',color:'#fff',fontSize:18,outline:'none',fontFamily:F}} />
               </div>
-              <button onClick={()=>{
+              <button onClick={async ()=>{
                 const cleanPhone = phone.replace(/[^\d+]/g, '');
                 if(cleanPhone.length < 8) return; 
                 setLoading(true);
-                setTimeout(()=>{setLoading(false);setStep('code');}, 1000);
+                const { error } = await supabase.auth.signInWithOtp({ phone: cleanPhone });
+                setLoading(false);
+                if (error) {
+                  alert("Error: " + error.message);
+                } else {
+                  setStep('code');
+                }
               }} disabled={loading || phone.replace(/[^\d+]/g, '').length < 8} style={{width:'100%',padding:'16px',borderRadius:12,fontSize:16,fontWeight:700,background:phone.replace(/[^\d+]/g, '').length>=8?C.red:C.s4,color:phone.replace(/[^\d+]/g, '').length>=8?'#fff':C.muted,border:'none',cursor:phone.replace(/[^\d+]/g, '').length>=8?'pointer':'not-allowed',transition:'all 0.2s',opacity:loading?0.7:1}}>
                 {loading ? 'Sending SMS...' : 'Continue'}
               </button>
@@ -63,10 +69,21 @@ function LoginScreen({ onLogin }) {
                 <div style={{fontSize:11,color:C.muted,fontWeight:700,marginBottom:4,textTransform:'uppercase',letterSpacing:1}}>Verification Code (SMS)</div>
                 <input type="number" autoFocus value={code} onChange={e=>setCode(e.target.value)} placeholder="000 000" style={{width:'100%',background:'transparent',border:'none',color:'#fff',fontSize:18,outline:'none',fontFamily:F,letterSpacing:4}} />
               </div>
-              <button onClick={()=>{
-                if(code.length<4) return; setLoading(true);
-                setTimeout(()=>onLogin({ token: 'jwt-phone-'+phone }), 1000);
-              }} disabled={loading || code.length<4} style={{width:'100%',padding:'16px',borderRadius:12,fontSize:16,fontWeight:700,background:code.length>=4?C.red:C.s4,color:code.length>=4?'#fff':C.muted,border:'none',cursor:code.length>=4?'pointer':'not-allowed',transition:'all 0.2s',opacity:loading?0.7:1}}>
+              <button onClick={async ()=>{
+                if(code.length !== 6) return; 
+                setLoading(true);
+                const { data, error } = await supabase.auth.verifyOtp({ 
+                  phone: phone.replace(/[^\d+]/g, ''), 
+                  token: code, 
+                  type: 'sms' 
+                });
+                setLoading(false);
+                if (error) {
+                  alert("Verification failed: " + error.message);
+                } else if (data?.session) {
+                  // Authentication complete - trigger state update
+                }
+              }} disabled={loading || code.length !== 6} style={{width:'100%',padding:'16px',borderRadius:12,fontSize:16,fontWeight:700,background:code.length===6?C.red:C.s4,color:code.length===6?'#fff':C.muted,border:'none',cursor:code.length===6?'pointer':'not-allowed',transition:'all 0.2s',opacity:loading?0.7:1}}>
                 {loading ? 'Verifying...' : 'Sign In'}
               </button>
               <button onClick={()=>{setStep('phone');setCode('');}} style={{background:'transparent',border:'none',color:C.muted,fontSize:14,cursor:'pointer',marginTop:4}}>← Back</button>
@@ -401,6 +418,11 @@ export default function VanishText() {
       if (myCipher) {
          const senderProf = directory[targetMsg.sender];
          if (senderProf) decryptedText = await decryptMessageWithSenderKey(myCipher, senderProf.publicKey);
+         
+         // ⏳ SYNC SUPABASE: Marquer le message comme "lu" sur le serveur pour déclencher le TTL physique
+         supabase.from('messages').update({ read_at: new Date() }).eq('id', mid).then(({error})=>{
+           if(error) console.error("Erreur Sync Vanish:", error);
+         });
       } else {
          decryptedText = "[Réseau Indisponible lors de l'envoi / Non-Déchiffrable]";
       }
@@ -409,6 +431,18 @@ export default function VanishText() {
     setConvs(p=>{const c={...p[cid]};c.messages=c.messages.map(m=>m.id===mid&&!m.isRead?{...m,text:decryptedText,isRead:true,status:m.sender!==view?'read':m.status,ttl:180,hasTtl:true}:m);return{...p,[cid]:c};});
     pushN('m','👁','Decrypted','Disappears in 3 minutes');
   },[view,pushN,decryptMessageWithSenderKey,session,directory]);
+
+  // ── 🔥 THE REAPER: Suppression physique des messages expirés sur Supabase ──
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const reap = async () => {
+      const threeMinsAgo = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+      const { error, count } = await supabase.from('messages').delete().lt('read_at', threeMinsAgo);
+      if (count > 0) console.log(`🔥 Reaper: ${count} messages supprimés physiquement de Supabase.`);
+    };
+    const inv = setInterval(reap, 15000); // Nettoyage toutes les 15s
+    return () => clearInterval(inv);
+  }, [isAuthenticated]);
 
   const startCall=useCallback(async (name, isVideo=false)=>{
     try {

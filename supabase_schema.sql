@@ -26,8 +26,12 @@ CREATE TABLE public.messages (
   sender_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
   ciphertexts JSONB NOT NULL,
   cid TEXT, -- L'identifiant du "salon" arbitraire ou contact mocké (ex: c1, c2)
+  read_at TIMESTAMP WITH TIME ZONE, -- Heure à laquelle le premier destinataire a déchiffré le message
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
+
+-- Index pour accélérer la suppression des messages expirés par le "Reaper"
+CREATE INDEX idx_messages_read_at ON public.messages(read_at);
 
 -- Enable RLS
 ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
