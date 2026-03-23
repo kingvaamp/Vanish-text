@@ -193,13 +193,15 @@ export default function VanishText() {
   const [addContactOpen,setAddContactOpen]=useState(false);
   const [newContactName,setNewContactName]=useState('');
   const [newContactPhone,setNewContactPhone]=useState('');
+  const [securityOpen,setSecurityOpen]=useState(false);
+  const [safetyNumber,setSafetyNumber]=useState('');
   
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [session, setSession] = useState(null);
   const [expoPushToken, setExpoPushToken] = useState('');
   const [directory, setDirectory] = useState({});
 
-  const { keys, encryptMessageForDirectory, decryptMessageWithSenderKey, generateKeys } = useCrypto();
+  const { keys, encryptMessageForDirectory, decryptMessageWithSenderKey, generateKeys, getSafetyNumber } = useCrypto();
   useEffect(()=>{ generateKeys(); },[generateKeys]);
 
   // Push Notification Setup
@@ -584,9 +586,19 @@ export default function VanishText() {
                 <div style={{display:'flex',alignItems:'center',gap:9,padding:'0 12px',height:56,background:C.s1,borderBottom:`1px solid ${C.border}`,flexShrink:0}}>
                   <button onClick={()=>setActiveConv(null)} style={{width:34,height:34,borderRadius:17,border:'none',background:'transparent',color:C.rb,fontSize:24,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}>‹</button>
                   <Av name={conv.name} size={36} online={conv.online}/>
-                  <div style={{flex:1,minWidth:0,cursor:'pointer'}} onClick={()=>setDetailContact(CONTACTS.find(c=>c.id===activeConv)||{id:activeConv,name:conv.name,phone:conv.phone,online:conv.online})}>
+                  <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:15,fontWeight:700,color:C.white,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{conv.name}</div>
-                    <div style={{fontSize:11,color:C.muted,display:'flex',alignItems:'center',gap:5,marginTop:1}}><span>{conv.online?'online':'offline'}</span><Badge/></div>
+                    <div style={{fontSize:11,color:C.muted,display:'flex',alignItems:'center',gap:5,marginTop:1,flexWrap:'wrap'}}>
+                      <span style={{color:conv.online?C.rb:C.muted}}>{conv.online?'online':'offline'}</span>
+                      <Badge/>
+                      <span style={{color:C.muted2}}>•</span>
+                      <span onClick={async (e)=>{
+                        e.stopPropagation();
+                        const sn = await getSafetyNumber(directory[activeConv]?.publicKey);
+                        setSafetyNumber(sn);
+                        setSecurityOpen(true);
+                      }} style={{color:C.red,fontWeight:700,cursor:'pointer',fontSize:10,textDecoration:'underline'}}>Verify Security</span>
+                    </div>
                   </div>
                   <button onClick={()=>startCall(conv.name)} style={{width:34,height:34,borderRadius:17,border:`1px solid ${C.border}`,background:'transparent',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}>
                     <PhoneIcon stroke={C.text2} w={17}/>
@@ -1084,6 +1096,31 @@ export default function VanishText() {
           </div>
         )}
       </div>
+
+      {/* SECURITY VERIFICATION MODAL */}
+      {securityOpen && (
+        <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(0,0,0,.85)',zIndex:10000,display:'flex',alignItems:'center',justifyContent:'center',padding:20,backdropFilter:'blur(5px)'}}>
+          <div style={{width:'100%',maxWidth:360,background:C.s1,borderRadius:24,border:`1px solid ${C.border}`,overflow:'hidden',display:'flex',flexDirection:'column',boxShadow:'0 20px 40px rgba(0,0,0,.4)'}}>
+            <div style={{padding:'24px 20px',textAlign:'center',background:C.s2,borderBottom:`1px solid ${C.border}`}}>
+              <div style={{fontSize:32,marginBottom:12}}>🛡️</div>
+              <div style={{fontSize:20,fontWeight:800,color:C.white,marginBottom:6}}>Verify Identity</div>
+              <div style={{fontSize:13,color:C.muted,lineHeight:1.4}}>To verify that this conversation is end-to-end encrypted, compare the number below with {activeConv ? convs[activeConv]?.name : 'your contact'}.</div>
+            </div>
+            <div style={{padding:'32px 20px',display:'flex',flexDirection:'column',alignItems:'center',gap:20}}>
+              <div style={{background:C.s3,border:`1px solid ${C.red}`,borderRadius:14,padding:'16px 24px',display:'flex',flexDirection:'column',alignItems:'center',gap:6,boxShadow:`0 0 20px ${C.rdim}`}}>
+                <div style={{fontSize:10,fontWeight:800,color:C.red,letterSpacing:'.08em',textTransform:'uppercase'}}>Safety Number</div>
+                <div style={{fontSize:26,fontWeight:900,color:C.white,fontFamily:'monospace',letterSpacing:'2px'}}>{safetyNumber}</div>
+              </div>
+              <div style={{fontSize:12,color:C.rb,textAlign:'center',padding:'0 10px',lineHeight:1.5}}>
+                If this number matches exactly on both devices, the connection is 100% secure and no one can intercept your messages.
+              </div>
+            </div>
+            <div style={{padding:'16px 20px 24px'}}>
+              <button onClick={()=>setSecurityOpen(false)} style={{width:'100%',padding:14,borderRadius:14,background:C.red,color:'#fff',fontSize:15,fontWeight:800,border:'none',cursor:'pointer',boxShadow:`0 4px 12px ${C.rdim}`}}>I Understand</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* TAB BAR */}
       <div style={{height:56,background:C.s1,borderTop:`1px solid ${C.border}`,display:'flex',alignItems:'stretch',flexShrink:0}}>

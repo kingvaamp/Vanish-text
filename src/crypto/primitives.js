@@ -102,6 +102,27 @@ export async function encrypt(keyBuf, plaintext) {
   };
 }
 
+// ── SHA-256 Digest & Safety Numbers ───────────────
+export async function sha256(data) {
+  const buf = typeof data === 'string' ? ENC.encode(data) : data;
+  return await subtle.digest('SHA-256', buf);
+}
+
+export async function generateSafetyNumber(keyA, keyB) {
+  // Trier alphabétiquement pour garantir le même résultat pour les deux utilisateurs
+  const keys = [keyA, keyB].sort();
+  const hash = await sha256(keys[0] + keys[1]);
+  const hashArray = new Uint8Array(hash);
+  
+  // Extraire un nombre de 12 chiffres à partir des premiers octets du hash
+  let numStr = "";
+  for (let i = 0; i < 6; i++) {
+    const val = hashArray[i].toString().padStart(3, '0');
+    numStr += val;
+  }
+  return numStr.substring(0, 12).replace(/(\d{4})/g, '$1 ').trim();
+}
+
 // ── AES-256-GCM déchiffrement ─────────────────────
 export async function decrypt(keyBuf, ivB64, ctB64) {
   const key = await subtle.importKey(

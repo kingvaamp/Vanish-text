@@ -144,5 +144,11 @@ export default function useCrypto() {
       }
   }, [keys]);
 
-  return { keys, generateKeys, encryptMessageForDirectory, decryptMessageWithSenderKey };
+  // Calcule le numéro de sécurité unique (Fingerprint) pour un pair
+  const getSafetyNumber = useCallback(async (peerPublicKeyB64) => {
+    if (!keys?.kp?.publicB64 || !peerPublicKeyB64) return "...";
+    return await generateSafetyNumber(keys.kp.publicB64, peerPublicKeyB64);
+  }, [keys]);
+
+  return { keys, generateKeys, encryptMessageForDirectory, decryptMessageWithSenderKey, getSafetyNumber };
 }
