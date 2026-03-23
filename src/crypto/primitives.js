@@ -4,8 +4,11 @@ const ENC = new TextEncoder();
 const DEC = new TextDecoder();
 
 // ── Helpers ───────────────────────────────────────
-export const toB64 = buf =>
-  btoa(String.fromCharCode(...new Uint8Array(buf)));
+export const toB64 = buf => {
+  let bin = '';
+  new Uint8Array(buf).forEach(b => bin += String.fromCharCode(b));
+  return btoa(bin);
+};
 
 export const fromB64 = str =>
   Uint8Array.from(atob(str), c => c.charCodeAt(0)).buffer;
@@ -108,19 +111,43 @@ export async function sha256(data) {
   return await subtle.digest('SHA-256', buf);
 }
 
+export async function sha512(data) {
+  const buf = typeof data === 'string' ? ENC.encode(data) : data;
+  return await subtle.digest('SHA-512', buf);
+}
+
 export async function generateSafetyNumber(keyA, keyB) {
-  // Trier alphabétiquement pour garantir le même résultat pour les deux utilisateurs
-  const keys = [keyA, keyB].sort();
-  const hash = await sha256(keys[0] + keys[1]);
-  const hashArray = new Uint8Array(hash);
+  // Signal-style Safety Numbers (60 digits)
+  // 1. Fingerprint pour chaque clé (SHA-512 truncated to 30 bytes)
+  const fpA = new Uint8Array(await sha512(keyA)).slice(0, 30);
+  const fpB = new Uint8Array(await sha512(keyB)).slice(0, 30);
   
-  // Extraire un nombre de 12 chiffres à partir des premiers octets du hash
-  let numStr = "";
-  for (let i = 0; i < 6; i++) {
-    const val = hashArray[i].toString().padStart(3, '0');
-    numStr += val;
+  // 2. Trier et concaténer
+  const sorted = [fpA, fpB].sort((a, b) => {
+    for (let i = 0; i < 30; i++) {
+      if (a[i] < b[i]) return -1;
+      if (a[i] > b[i]) return 1;
+    }
+    return 0;
+  });
+  
+  const combined = new Uint8Array(60);
+  combined.set(sorted[0]);
+  combined.set(sorted[1], 30);
+  
+  // 3. Convertir en blocs de chiffres (12 groupes de 5 = 60 chiffres)
+  // On traite par blocs de 5 octets -> ~12 chiffres, mais pour faire 60 chiffres propres:
+  // On va simplement prendre les 60 octets et les mapper en décimal par paires (ou BigInt)
+  // Pour rester simple et déterministe:
+  let finalStr = "";
+  for (let i = 0; i < 60; i += 5) {
+     const chunk = combined.slice(i, i + 5);
+     let val = 0n;
+     for (let j = 0; j < 5; j++) val = (val << 8n) + BigInt(chunk[j]);
+     finalStr += val.toString().padStart(12, '0').substring(0, 5); 
   }
-  return numStr.substring(0, 12).replace(/(\d{4})/g, '$1 ').trim();
+  
+  return finalStr.replace(/(\d{5})/g, '$1 ').trim();
 }
 
 // ── AES-256-GCM déchiffrement ─────────────────────

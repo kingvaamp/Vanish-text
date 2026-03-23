@@ -69,8 +69,12 @@ export default function useCrypto() {
         // 4. Passer dans le module HKDF pour obtenir la clé AES-GCM
         const aesKeyBuf = await hkdf(sharedSecret, null, 'VanishText-Session', 32);
         
-        // 5. Chiffrer le payload
-        const encData = await encrypt(aesKeyBuf, plainText);
+        // 5. Chiffrer le payload (Sealed Sender: On embarque l'identité de l'émetteur dans le chiffré)
+        const sealedPayload = JSON.stringify({
+          t: plainText,
+          s: keys.kp.publicB64 // Certificat d'émetteur chiffré
+        });
+        const encData = await encrypt(aesKeyBuf, sealedPayload);
         
         // 6. PFS: Joindre la clé publique éphémère d'Alice directement à la charge utile (v5)
         ciphertexts[peerSocketId] = `enc:ecdh-aes-gcm:v5:${encData.iv}:${encData.ciphertext}:${ephemeralKeys.publicB64}`;
@@ -137,10 +141,16 @@ export default function useCrypto() {
         const sharedSecret = await ecdh(keys.kp.privateKey, senderKeyObj);
         const aesKeyBuf = await hkdf(sharedSecret, null, 'VanishText-Session', 32);
         
-        return await decrypt(aesKeyBuf, iv, ciphertext);
+        const decryptedRaw = await decrypt(aesKeyBuf, iv, ciphertext);
+        try {
+          // Sealed Sender: On déballe l'objet pour récupérer le texte ET l'émetteur
+          return JSON.parse(decryptedRaw); 
+        } catch (e) {
+          return { t: decryptedRaw, s: fallbackSenderPublicKeyB64 }; // Fallback pour compatibilité
+        }
       } catch (e) {
         console.log("Échec de déchiffrement PFS asymétrique");
-        return "[Erreur]";
+        return { t: "[Erreur Cryptographique]", s: null };
       }
   }, [keys]);
 

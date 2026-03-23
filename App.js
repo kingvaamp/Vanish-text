@@ -327,33 +327,41 @@ export default function VanishText() {
     const messagesSub = supabase.channel('public:messages')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload) => {
         const m = payload.new;
-        if (m.sender_id === session?.user?.id) return; // Prevent local echo duplicate
-        
-        let decryptedText = "[Message non déchiffrable]";
+        // Sealed Sender: m.sender_id est indéfini côté serveur
         if (m.ciphertexts && m.ciphertexts[session.user.id]) {
-           const senderProf = directory[m.sender_id];
-           if (senderProf) decryptedText = await decryptMessageWithSenderKey(m.ciphertexts[session.user.id], senderProf.publicKey);
-        }
+           const myCipher = m.ciphertexts[session.user.id];
+           const decryptedObj = await decryptMessageWithSenderKey(myCipher, null);
+           
+           let discoveredSenderId = null;
+           if (decryptedObj.s) {
+             const found = Object.entries(directory).find(([id, p]) => p.publicKey === decryptedObj.s);
+             if (found) discoveredSenderId = found[0];
+           }
 
-        const formattedMsg = {
-          id: m.id, type: 'text', text: decryptedText,
-          sender: m.sender_id, time: now(), isRead: false,
-          ttl: 0, hasTtl: false, cid: m.cid || 'c1'
-        };
+           const formattedMsg = {
+             id: m.id, type: 'text', text: decryptedObj.t,
+             sender: discoveredSenderId, time: now(), isRead: false,
+             ttl: 0, hasTtl: false, cid: m.cid || (discoveredSenderId || 'unknown')
+           };
 
-        setConvs(p => {
-          const cid = formattedMsg.cid;
-          if (!p[cid]) return p;
-          const c = { ...p[cid] };
-          if (c.messages.some(msg => msg.id === formattedMsg.id)) return p;
-          c.messages = [...c.messages, formattedMsg];
-          const unreadKey = formattedMsg.sender === view ? 'uB' : 'uA'; // Fallbacks UI mock
-          c[unreadKey] = (c[unreadKey] || 0) + 1;
-          return { ...p, [cid]: c };
-        });
-        
-        if (typeof document !== 'undefined' && document.visibilityState === 'hidden' && "Notification" in window && Notification.permission === "granted") {
-          new window.Notification("VanishText", { body: "🔒 Encrypted Message" });
+           setConvs(p => {
+             const cid = formattedMsg.cid;
+             if (!p[cid]) {
+                // Créer la conv si elle n'existe pas (Découverte de contact par message entrant)
+                const sName = discoveredSenderId && directory[discoveredSenderId] ? directory[discoveredSenderId].name : 'Inconnu';
+                p[cid] = { id: cid, name: sName, messages: [], uA: 0, uB: 0 };
+             }
+             const c = { ...p[cid] };
+             if (c.messages.some(msg => msg.id === formattedMsg.id)) return p;
+             c.messages = [...c.messages, formattedMsg];
+             const unreadKey = view === 'alice' ? 'uA' : 'uB'; // Increment unread for non-active view
+             c[unreadKey] = (c[unreadKey] || 0) + 1;
+             return { ...p, [cid]: c };
+           });
+           
+           if (typeof document !== 'undefined' && document.visibilityState === 'hidden' && "Notification" in window && Notification.permission === "granted") {
+             new window.Notification("VanishText", { body: "🔒 Message Chiffré reçu" });
+           }
         }
       }).subscribe();
 
@@ -416,8 +424,7 @@ export default function VanishText() {
     const localId = nid();
     
     const dbMsg = {
-      id: localId, // Match local UI id with DB id
-      sender_id: session.user.id,
+      id: localId, 
       ciphertexts,
       cid
     };
@@ -443,20 +450,33 @@ export default function VanishText() {
     if (targetMsg.ciphertexts && session) {
       const myCipher = targetMsg.ciphertexts[session.user.id];
       if (myCipher) {
-         const senderProf = directory[targetMsg.sender];
-         if (senderProf) decryptedText = await decryptMessageWithSenderKey(myCipher, senderProf.publicKey);
+         // Sealed Sender: On déchiffre sans connaître l'émetteur a priori (PFS v5)
+         const decryptedObj = await decryptMessageWithSenderKey(myCipher, null);
+         decryptedText = decryptedObj.t;
          
-         // ⏳ SYNC SUPABASE: Marquer le message comme "lu" sur le serveur pour déclencher le TTL physique
+         // On retrouve l'identité de l'émetteur via sa clé publique déchiffrée
+         let discoveredSenderId = targetMsg.sender;
+         if (decryptedObj.s) {
+           const found = Object.entries(directory).find(([id, p]) => p.publicKey === decryptedObj.s);
+           if (found) discoveredSenderId = found[0];
+         }
+         
+         // ⏳ SYNC SUPABASE: Marquer le message comme "lu"
          supabase.from('messages').update({ read_at: new Date() }).eq('id', mid).then(({error})=>{
            if(error) console.error("Erreur Sync Vanish:", error);
          });
+         
+         setConvs(p=>{
+           const c={...p[cid]};
+           c.messages=c.messages.map(m=>m.id===mid&&!m.isRead?{...m,text:decryptedText,sender:discoveredSenderId,isRead:true,status:m.sender!==view?'read':m.status,ttl:180,hasTtl:true}:m);
+           return{...p,[cid]:c};
+         });
+         pushN('m','👁','Decrypted','Disappears in 3 minutes');
+         return;
       } else {
          decryptedText = "[Réseau Indisponible lors de l'envoi / Non-Déchiffrable]";
       }
     }
-    
-    setConvs(p=>{const c={...p[cid]};c.messages=c.messages.map(m=>m.id===mid&&!m.isRead?{...m,text:decryptedText,isRead:true,status:m.sender!==view?'read':m.status,ttl:180,hasTtl:true}:m);return{...p,[cid]:c};});
-    pushN('m','👁','Decrypted','Disappears in 3 minutes');
   },[view,pushN,decryptMessageWithSenderKey,session,directory]);
 
   // ── 🔥 THE REAPER: Suppression physique des messages expirés sur Supabase ──

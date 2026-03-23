@@ -14,10 +14,10 @@ const ALLOWED_ORIGINS = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+    if (ALLOWED_ORIGINS.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error('CORS Policy: Origin not allowed'));
+      callback(new Error('CORS Policy: Origin not allowed or missing'));
     }
   },
   credentials: true
