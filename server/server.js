@@ -4,7 +4,24 @@ const cors = require('cors');
 const path = require('path');
 
 const app = express();
-app.use(cors());
+const ALLOWED_ORIGINS = [
+  'https://vanish-venx.onrender.com', // Production
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:8081',
+  'http://localhost:5050'
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('CORS Policy: Origin not allowed'));
+    }
+  },
+  credentials: true
+}));
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 3001;
