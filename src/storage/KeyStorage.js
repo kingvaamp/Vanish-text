@@ -1,64 +1,75 @@
 // src/storage/KeyStorage.js
-// iOS Keychain / Android Keystore via expo-secure-store
-// Les clés privées ne transitent JAMAIS en clair hors du Keychain
+// Secure key storage with graceful fallback for web (no expo-secure-store needed)
+// On native: uses expo-secure-store (iOS Keychain / Android Keystore)
+// On web: uses sessionStorage (keys cleared when tab closes — acceptable for web demo)
 
-import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
-const P    = 'vt:';  // Préfixe pour éviter les collisions
-const OPTS = {
-  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-};
+const P = 'vt:';  // namespace prefix
 
-const isWeb = Platform.OS === 'web';
+// ── Web path ──────────────────────────────────────────────────────
+function webSet(key, value) {
+  try { sessionStorage.setItem(P + key, value); } catch (_) {}
+}
+function webGet(key) {
+  try { return sessionStorage.getItem(P + key); } catch (_) { return null; }
+}
+function webDel(key) {
+  try { sessionStorage.removeItem(P + key); } catch (_) {}
+}
+
+// ── Native path (lazy import so web bundle never loads expo-secure-store) ──
+let SecureStore = null;
+async function getSecureStore() {
+  if (SecureStore) return SecureStore;
+  try {
+    SecureStore = await import('expo-secure-store');
+    return SecureStore;
+  } catch (_) {
+    console.warn('[KeyStorage] expo-secure-store non disponible, fallback sessionStorage');
+    return null;
+  }
+}
+
+const OPTS = { keychainAccessible: 'WHEN_UNLOCKED_THIS_DEVICE_ONLY' };
 
 async function secureSet(key, value) {
-  if (isWeb) {
-    try { sessionStorage.setItem(P + key, value); } catch (_) {}
-    return;
-  }
-  await SecureStore.setItemAsync(P + key, value, OPTS);
+  if (Platform.OS === 'web') { webSet(key, value); return; }
+  const ss = await getSecureStore();
+  if (ss) await ss.setItemAsync(P + key, value, OPTS);
+  else webSet(key, value);
 }
 
 async function secureGet(key) {
-  if (isWeb) {
-    try { return sessionStorage.getItem(P + key); } catch (_) { return null; }
-  }
-  return SecureStore.getItemAsync(P + key);
+  if (Platform.OS === 'web') return webGet(key);
+  const ss = await getSecureStore();
+  return ss ? ss.getItemAsync(P + key) : webGet(key);
 }
 
 async function secureDel(key) {
-  if (isWeb) {
-    try { sessionStorage.removeItem(P + key); } catch (_) {}
-    return;
-  }
-  return SecureStore.deleteItemAsync(P + key);
+  if (Platform.OS === 'web') { webDel(key); return; }
+  const ss = await getSecureStore();
+  if (ss) await ss.deleteItemAsync(P + key);
+  else webDel(key);
 }
 
-// ── Identity Key ────────────────────────────────────────────────
+// ── Public API ────────────────────────────────────────────────────
 
 export async function saveIdentityKey(kp) {
   await secureSet('ik_priv', JSON.stringify(kp.privateJwk));
   await secureSet('ik_pub',  kp.publicB64);
-  console.log('[KeyStorage] ✓ Identity Key sauvegardée dans le Keychain');
 }
 
 export async function loadIdentityKey() {
   const priv = await secureGet('ik_priv');
   const pub  = await secureGet('ik_pub');
   if (!priv || !pub) return null;
-  try {
-    return { privateJwk: JSON.parse(priv), publicB64: pub };
-  } catch (e) {
-    console.warn('[KeyStorage] Clé corrompue, régénération nécessaire');
-    return null;
-  }
+  try { return { privateJwk: JSON.parse(priv), publicB64: pub }; }
+  catch (_) { return null; }
 }
-
-// ── Wipe complet (logout / suppression compte) ──────────────────
 
 export async function wipeAllKeys() {
   await secureDel('ik_priv');
   await secureDel('ik_pub');
-  console.log('[KeyStorage] ✓ Toutes les clés effacées du Keychain');
+  console.log('[KeyStorage] ✓ Clés effacées');
 }
