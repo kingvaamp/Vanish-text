@@ -1,74 +1,135 @@
-const express = require('express');
-const http = require('http');
-const cors = require('cors');
-const path = require('path');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
+// server/server.js — Version sécurisée complète
+'use strict';
 
-const app = express();
+const express    = require('express');
+const http       = require('http');
+const path       = require('path');
+const cors       = require('cors');
+const rateLimit  = require('express-rate-limit');
+const helmet     = require('helmet');
 
-// ── Security Headers ──────────────────────────────────────────────
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      connectSrc: ["'self'", 'https://*.supabase.co', 'wss://*.supabase.co'],
-      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // Required for Expo web bundles
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", 'data:', 'blob:'],
-      fontSrc: ["'self'", 'data:'],
-    },
-  },
-  crossOriginEmbedderPolicy: false, // Required for Expo web workers
-}));
+// ── Validation des variables d'environnement ─────────────────────
+const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];
+const missing = REQUIRED_ENV.filter(k => !process.env[k]);
+if (missing.length > 0) {
+  console.warn(`⚠️  Variables manquantes (fonctionnement dégradé) : ${missing.join(', ')}`);
+  // Ne pas quitter — le serveur peut encore servir le frontend sans Socket.io auth
+}
+
+const app    = express();
+const server = http.createServer(app);
+const PORT   = process.env.PORT || 3001;
 
 // ── CORS ──────────────────────────────────────────────────────────
 const ALLOWED_ORIGINS = [
+  process.env.FRONTEND_URL,
   'https://vanish-venx.onrender.com',
   'http://localhost:3000',
   'http://localhost:3001',
   'http://localhost:8081',
-  'http://localhost:5050',
-];
+].filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, curl, Expo Go) or matching whitelist
+    // Allow null/missing origin (mobile apps, Expo Go, curl)
     if (!origin || ALLOWED_ORIGINS.includes(origin)) {
-      callback(null, true);
-    } else {
-      // Return 403 without leaking internal policy message
-      callback(null, false);
+      return callback(null, true);
     }
+    // In production block unknown origins silently (no error message leakage)
+    if (process.env.NODE_ENV === 'production') {
+      return callback(null, false);
+    }
+    return callback(null, true); // Dev: permissive
   },
-  credentials: true,
+  credentials:    true,
+  methods:        ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
+// ── Helmet (security headers) ────────────────────────────────────
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc:  ["'self'"],
+      connectSrc:  ["'self'", 'https://*.supabase.co', 'wss://*.supabase.co'],
+      scriptSrc:   ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // Required by Expo web
+      styleSrc:    ["'self'", "'unsafe-inline'"],
+      imgSrc:      ["'self'", 'data:', 'blob:'],
+      fontSrc:     ["'self'", 'data:'],
+    },
+  },
+  hsts:                        { maxAge: 31536000, includeSubDomains: true, preload: true },
+  crossOriginEmbedderPolicy:   false, // Required for Expo web workers
+}));
+
+app.use(express.json({ limit: '50kb' }));
+
 // ── Rate Limiting ─────────────────────────────────────────────────
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 200,                  // 200 requests per window per IP
+const generalLimiter = rateLimit({
+  windowMs:        15 * 60 * 1000,
+  max:             200,
   standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many requests, please try again later.' },
+  legacyHeaders:   false,
+  message: { error: 'Trop de requêtes. Réessaie dans 15 minutes.' },
 });
-app.use(limiter);
+app.use(generalLimiter);
 
-// ── Static Files ──────────────────────────────────────────────────
-const server = http.createServer(app);
-const PORT = process.env.PORT || 3001;
-
+// ── Static files ──────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, '../dist')));
 
-app.get('/api', (req, res) => {
-  res.json({ status: 'ok', service: 'VanishText', mode: 'serverless' });
-});
+app.get('/api/health', (_, res) => res.json({
+  status: 'ok',
+  ts:     new Date().toISOString(),
+}));
 
 // SPA fallback
-app.get('*', (req, res) => {
+app.get('*', (_, res) => {
   res.sendFile(path.join(__dirname, '../dist', 'index.html'));
 });
 
+// ── Socket.io with JWT validation (optional — only if env vars are set) ──
+if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  const { Server }       = require('socket.io');
+  const { createClient } = require('@supabase/supabase-js');
+
+  const supabaseAdmin = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+  );
+
+  const io = new Server(server, {
+    cors: { origin: ALLOWED_ORIGINS, methods: ['GET', 'POST'] },
+    transports:   ['websocket', 'polling'],
+    pingTimeout:  20000,
+    pingInterval: 10000,
+  });
+
+  // JWT validation middleware
+  io.use(async (socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('AUTH_REQUIRED'));
+    try {
+      const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+      if (error || !user) return next(new Error('AUTH_INVALID'));
+      socket.userId = user.id;
+      next();
+    } catch {
+      next(new Error('AUTH_ERROR'));
+    }
+  });
+
+  io.on('connection', (socket) => {
+    console.log(`[Socket] Connecté : ${socket.userId}`);
+    socket.join(`user:${socket.userId}`);
+    socket.on('disconnect', () => {
+      console.log(`[Socket] Déconnecté : ${socket.userId}`);
+    });
+  });
+
+  console.log('✓ Socket.io avec validation JWT activé');
+}
+
+// ── Start ─────────────────────────────────────────────────────────
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 VanishText server started on port ${PORT}`);
+  console.log(`🚀 VanishText Backend — Port ${PORT} | CORS: ${ALLOWED_ORIGINS.length} origines | Helmet: actif`);
 });

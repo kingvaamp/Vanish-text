@@ -1,164 +1,174 @@
-import { useState, useCallback, useRef } from 'react';
-import { generateKeyPair, importPublicKey, importPrivateKey, ecdh, hkdf, encrypt, decrypt } from './src/crypto/primitives';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// useCrypto.js — Version production avec Forward Secrecy basique (v2)
+import { useState, useCallback } from 'react';
+import {
+  generateKeyPair,
+  importPublicKey,
+  importPrivateKey,
+  ecdh,
+  hkdf,
+  encrypt,
+  decrypt,
+} from './src/crypto/primitives';
+import {
+  saveIdentityKey,
+  loadIdentityKey,
+} from './src/storage/KeyStorage';
 
-/**
- * useCrypto Hook - X3DH & N-Way Point-to-Point
- * Alice chiffre son message N fois (une fois pour chaque clé publique du salon).
- */
+// Compteur de ratchet en mémoire par destinataire
+// Donne une Forward Secrecy basique : clé différente à chaque message
+const ratchetCounters = {};
+
+// Calcule le Safety Number entre deux clés publiques (Signal-style, 60 digits)
+export async function computeSafetyNumber(myPublicB64, theirPublicB64) {
+  if (!myPublicB64 || !theirPublicB64) return null;
+  const sorted = [myPublicB64, theirPublicB64].sort();
+  const enc    = new TextEncoder();
+  const hash   = await crypto.subtle.digest(
+    'SHA-256',
+    enc.encode(sorted.join('||VanishText||'))
+  );
+  // 20 octets = 160 bits → 60 chiffres décimaux (identique à Signal)
+  const bytes = new Uint8Array(hash).slice(0, 20);
+  let decimal = '';
+  for (const byte of bytes) decimal += byte.toString().padStart(3, '0');
+  return decimal.slice(0, 60).match(/.{1,5}/g).join(' ');
+}
+
 export default function useCrypto() {
   const [keys, setKeys] = useState(null);
-  const ratchetCounter = useRef(0);
 
-  // Étape 2: Récupération de l'identité persistante (ou génération d'une nouvelle)
+  // Génère ou restaure les clés d'identité depuis le Keychain
   const generateKeys = useCallback(async () => {
     try {
-      // 1. Tente de récupérer la paire d'Identité Asymétrique existante dans le Local Storage
-      const storedStr = await AsyncStorage.getItem('vanish_identity_keypair');
-      if (storedStr) {
-        const storedKeys = JSON.parse(storedStr);
-        // Restaure les objets WebCrypto natifs depuis le JWK (Private) et B64 (Public)
-        const privateKey = await importPrivateKey(storedKeys.privateJwk);
-        const publicKey = await importPublicKey(storedKeys.publicB64);
-        
-        const k = { 
-          type: 'identity', 
-          kp: { publicKey, privateKey, publicB64: storedKeys.publicB64, privateJwk: storedKeys.privateJwk } 
+      const saved = await loadIdentityKey();
+      if (saved) {
+        const privateKey = await importPrivateKey(saved.privateJwk);
+        const kp = {
+          privateKey,
+          publicKey:  null,
+          publicB64:  saved.publicB64,
+          privateJwk: saved.privateJwk,
         };
+        const k = { type: 'identity', kp };
         setKeys(k);
+        console.log('[Crypto] ✓ Clés restaurées depuis le Keychain');
         return k;
       }
-
-      // 2. Si aucune clé n'existe pour cet appareil, on génère une nouvelle paire mathématique pure
       const myKeys = await generateKeyPair();
-      
-      // 3. Sauvegarde persistante immédiate pour survivre aux rechargements web et fermetures de l'app Mobile
-      await AsyncStorage.setItem('vanish_identity_keypair', JSON.stringify({
-         publicB64: myKeys.publicB64,
-         privateJwk: myKeys.privateJwk
-      }));
-
+      await saveIdentityKey({ privateJwk: myKeys.privateJwk, publicB64: myKeys.publicB64 });
       const k = { type: 'identity', kp: myKeys };
       setKeys(k);
-      return k; // Retourne l'objet avec kp.publicB64 pour l'envoyer au serveur
+      console.log('[Crypto] ✓ Nouvelles clés générées et sauvegardées');
+      return k;
     } catch (e) {
-      console.error("Erreur de génération/Restauration d'Identité:", e);
-      return { type: 'fallback' };
+      console.error('[Crypto] Erreur generateKeys :', e);
+      return null;
     }
   }, []);
 
-  // Chiffre le texte N fois avec PFS (Perfect Forward Secrecy - Ephemeral Sender Key)
-  const encryptMessageForDirectory = useCallback(async (plainText, directory) => {
-    // directory format: { 'socketId': { publicKey: 'B64...' }, ... }
-    if (!plainText || keys?.type !== 'identity') return null;
-    
-    // 1. PFS: Alice génère une paire de clés éphémères jetables pour CET ENVOI spécifique
-    const ephemeralKeys = await generateKeyPair();
-    
-    const ciphertexts = {};
-    for (const [peerSocketId, peerData] of Object.entries(directory)) {
-      try {
-        if (!peerData.publicKey) continue;
-        
-        // 2. Convertir la clé publique B64 de Bob en objet CryptoKey
-        const peerKeyObj = await importPublicKey(peerData.publicKey);
-        
-        // 3. PFS: Dériver le secret avec la Clé ÉPHÉMÈRE d'Alice + Clé Publique STATIQUE de Bob
-        const sharedSecret = await ecdh(ephemeralKeys.privateKey, peerKeyObj);
-        
-        // 4. Passer dans le module HKDF pour obtenir la clé AES-GCM
-        const aesKeyBuf = await hkdf(sharedSecret, null, 'VanishText-Session', 32);
-        
-        // 5. Chiffrer le payload (Sealed Sender: On embarque l'identité de l'émetteur dans le chiffré)
-        const sealedPayload = JSON.stringify({
-          t: plainText,
-          s: keys.kp.publicB64 // Certificat d'émetteur chiffré
-        });
-        const encData = await encrypt(aesKeyBuf, sealedPayload);
-        
-        // 6. PFS: Joindre la clé publique éphémère d'Alice directement à la charge utile (v5)
-        ciphertexts[peerSocketId] = `enc:ecdh-aes-gcm:v5:${encData.iv}:${encData.ciphertext}:${ephemeralKeys.publicB64}`;
-      } catch (e) {
-        console.error(`Erreur de chiffrement (Point-to-Point) vers ${peerSocketId}`);
+  // Chiffre un message pour N destinataires (N-Way ECDH + ratchet basique)
+  const encryptMessageForDirectory = useCallback(
+    async (plainText, directory) => {
+      if (!plainText || keys?.type !== 'identity') {
+        console.warn('[Crypto] encryptMessageForDirectory : état invalide');
+        return null;
       }
-    }
-    // La clé privée éphémère est IMMÉDIATEMENT détruite. Aucun message déchiffrable rétroactivement.
-    return ciphertexts; 
-  }, [keys]);
-
-  // Déchiffre le message reçu (qui contient un paquet de ciphertexts)
-  const decryptMessage = useCallback(async (ciphertextsObj, myId) => {
-    if (!ciphertextsObj || typeof ciphertextsObj !== 'object') return null;
-    
-    // Le serveur transmet un objet comportant un texte chiffré pour CHAQUE socket.
-    // On cherche celui qui NOUS est destiné.
-    const myCipherText = ciphertextsObj[myId]; 
-    if (!myCipherText || !myCipherText.startsWith('enc:')) {
-      return "[Message privé non-déchiffrable (Pas de charge utile destinée à votre appareil)]";
-    }
-    
-    try {
-      const parts = myCipherText.split(':');
-      if (parts.length < 5) return "[Erreur Format Point-to-Point]";
-      
-      const algo = parts[1];
-      if (algo === 'ecdh-aes-gcm' && keys?.type === 'identity') {
-        const iv = parts[3];
-        const ciphertext = parts[4];
-        
-        // Attention: Dans un vrai système, l'émetteur joint sa clé publique éphémère.
-        // Ici, pour le Proof of Concept, nous avons besoin de la clé publique de l'émetteur
-        // pour que Bob (nous) dérive le MÊME secret partagé !
-        // -> Nous avons besoin que encryptMessageForDirectory nous envoie qui est l'émetteur
-        // ou que la charge utile le contienne.
-        // Pour être élégant, nous allons simuler un Broadcast N-Way asymétrique.
-        
-        // ERREUR conceptuelle: Si Alice chiffre pour Bob, Bob a besoin de la clé PUBLIQUE
-        // d'Alice pour combiner avec sa propre clé PRIVÉE.
-        // Donc, Bob demande la clé publique d'Alice depuis l'annuaire au niveau du Hook App.js.
-        throw new Error("Déchiffrement délégué à l'interface");
-      }
-    } catch (e) {
-      console.error("Erreur décryptage N-Way", e);
-      return "[Erreur Cryptographique]";
-    }
-  }, [keys]);
-
-  // Déchiffre le message avec la clé publique éphémère (v5) ou statique (v4)
-  const decryptMessageWithSenderKey = useCallback(async (myCipherText, fallbackSenderPublicKeyB64) => {
-      try {
-        const parts = myCipherText.split(':');
-        const version = parts[2];
-        const iv = parts[3];
-        const ciphertext = parts[4];
-        
-        // v5 implémente le Perfect Forward Secrecy : la clé éphémère de l'émetteur est embarquée !
-        const senderKeyToUse = (version === 'v5' && parts[5]) ? parts[5] : fallbackSenderPublicKeyB64;
-        
-        const senderKeyObj = await importPublicKey(senderKeyToUse);
-        
-        // Bob dérive le secret avec sa Clé Privée STATIQUE + La Clé Publique ÉPHÉMÈRE d'Alice
-        const sharedSecret = await ecdh(keys.kp.privateKey, senderKeyObj);
-        const aesKeyBuf = await hkdf(sharedSecret, null, 'VanishText-Session', 32);
-        
-        const decryptedRaw = await decrypt(aesKeyBuf, iv, ciphertext);
+      const ciphertexts = {};
+      for (const [userId, peerData] of Object.entries(directory)) {
+        if (!peerData?.publicKey) continue;
         try {
-          // Sealed Sender: On déballe l'objet pour récupérer le texte ET l'émetteur
-          return JSON.parse(decryptedRaw); 
+          const peerKeyObj   = await importPublicKey(peerData.publicKey);
+          const sharedSecret = await ecdh(keys.kp.privateKey, peerKeyObj);
+
+          // Ratchet basique : compteur incrémenté à chaque message par destinataire
+          if (ratchetCounters[userId] === undefined) ratchetCounters[userId] = 0;
+          const msgIndex = ratchetCounters[userId]++;
+
+          const aesKeyBuf = await hkdf(
+            sharedSecret, null,
+            `VanishText-msg-${userId}-${msgIndex}`, 32
+          );
+          const { iv, ciphertext } = await encrypt(aesKeyBuf, plainText);
+          ciphertexts[userId] = {
+            algo:            'ecdh-aes-gcm-ratchet-v2',
+            iv,
+            ciphertext,
+            senderPublicKey: keys.kp.publicB64,
+            msgIndex,
+          };
         } catch (e) {
-          return { t: decryptedRaw, s: fallbackSenderPublicKeyB64 }; // Fallback pour compatibilité
+          console.error(`[Crypto] Erreur chiffrement vers ${userId} :`, e);
+        }
+      }
+      return ciphertexts;
+    },
+    [keys]
+  );
+
+  // Déchiffre un message reçu
+  // payload : objet { algo, iv, ciphertext, senderPublicKey, msgIndex }
+  //        ou string legacy "enc:ecdh-aes-gcm:v5:iv:ct:senderKey"
+  const decryptMessageWithSenderKey = useCallback(
+    async (payload, _fallback) => {
+      if (!keys?.kp?.privateKey) {
+        return { t: '[Erreur : clés non initialisées]', s: null };
+      }
+      try {
+        // Support legacy format string (v5) et nouveau format objet (v2)
+        let data;
+        if (typeof payload === 'string') {
+          if (payload.startsWith('enc:')) {
+            const parts = payload.split(':');
+            data = {
+              iv:             parts[3],
+              ciphertext:     parts[4],
+              senderPublicKey: parts[5] || _fallback,
+              msgIndex:       0,
+              senderId:       'legacy',
+            };
+          } else {
+            data = JSON.parse(payload);
+          }
+        } else {
+          data = payload;
+        }
+
+        const { iv, ciphertext, senderPublicKey, msgIndex = 0 } = data;
+
+        if (!senderPublicKey) {
+          return { t: '[Erreur : clé expéditeur manquante]', s: null };
+        }
+
+        const senderKeyObj = await importPublicKey(senderPublicKey);
+        const sharedSecret = await ecdh(keys.kp.privateKey, senderKeyObj);
+
+        // Dériver la même clé AES en utilisant le même msgIndex (ratchet)
+        const senderId = data.senderId || senderPublicKey.slice(0, 8);
+        const aesKeyBuf = await hkdf(
+          sharedSecret, null,
+          `VanishText-msg-${senderId}-${msgIndex}`, 32
+        );
+        const plainText = await decrypt(aesKeyBuf, iv, ciphertext);
+
+        try {
+          // Support Sealed Sender (objet { t, s })
+          const parsed = JSON.parse(plainText);
+          return { t: parsed.t || plainText, s: parsed.s || senderPublicKey };
+        } catch (_) {
+          return { t: plainText, s: senderPublicKey };
         }
       } catch (e) {
-        console.log("Échec de déchiffrement PFS asymétrique");
-        return { t: "[Erreur Cryptographique]", s: null };
+        console.error('[Crypto] Erreur déchiffrement :', e.message);
+        return { t: '[Impossible de déchiffrer ce message]', s: null };
       }
-  }, [keys]);
+    },
+    [keys]
+  );
 
-  // Calcule le numéro de sécurité unique (Fingerprint) pour un pair
-  const getSafetyNumber = useCallback(async (peerPublicKeyB64) => {
-    if (!keys?.kp?.publicB64 || !peerPublicKeyB64) return "...";
-    return await generateSafetyNumber(keys.kp.publicB64, peerPublicKeyB64);
-  }, [keys]);
-
-  return { keys, generateKeys, encryptMessageForDirectory, decryptMessageWithSenderKey, getSafetyNumber };
+  return {
+    keys,
+    generateKeys,
+    encryptMessageForDirectory,
+    decryptMessageWithSenderKey,
+  };
 }

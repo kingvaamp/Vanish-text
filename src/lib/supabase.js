@@ -1,21 +1,39 @@
+// src/lib/supabase.js
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
-// ⚠️ REMPLACEZ CES VALEURS PAR CELLES DE VOTRE DASHBOARD SUPABASE ⚠️
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+const supabaseUrl     = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
+// Guard — crash explicite si les variables manquent
 if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Variables Supabase manquantes dans .env');
+  throw new Error(
+    '[VanishText] EXPO_PUBLIC_SUPABASE_URL et EXPO_PUBLIC_SUPABASE_ANON_KEY ' +
+    'sont requis. Vérifie ton fichier .env.local'
+  );
 }
+
+// Validation format URL
+if (!supabaseUrl.startsWith('https://') || !supabaseUrl.includes('.supabase.co')) {
+  throw new Error('[VanishText] EXPO_PUBLIC_SUPABASE_URL invalide');
+}
+
+const storage = Platform.OS === 'web'
+  ? (typeof window !== 'undefined' ? window.localStorage : null)
+  : AsyncStorage;
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    // Isomorphique: Web utilise localStorage nativement, iOS/Android utilisent AsyncStorage
-    storage: Platform.OS === 'web' ? (typeof window !== 'undefined' ? window.localStorage : null) : AsyncStorage,
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: true, // Très important pour l'OAuth web!
+    storage,
+    autoRefreshToken:   true,
+    persistSession:     true,
+    detectSessionInUrl: Platform.OS === 'web',
   },
+});
+
+// Health check silencieux au démarrage
+supabase.from('profiles').select('count').limit(1).then(({ error }) => {
+  if (error) console.warn('[Supabase] Connexion dégradée :', error.message);
+  else       console.log('[Supabase] ✓ Connecté');
 });
