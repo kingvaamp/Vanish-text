@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import useCrypto from './useCrypto';
 import { supabase } from './src/lib/supabase';
 import { wipeAllKeys } from './src/storage/KeyStorage';
+import { generateSafetyNumber } from './src/crypto/primitives';
 import * as Notifications from 'expo-notifications';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, Animated, Dimensions, Platform, LogBox, StatusBar } from 'react-native';
 import * as Device from 'expo-device';
@@ -221,8 +222,21 @@ export default function VanishText() {
   const [expoPushToken, setExpoPushToken] = useState('');
   const [directory, setDirectory] = useState({});
 
-  const { keys, encryptMessageForDirectory, decryptMessageWithSenderKey, generateKeys, getSafetyNumber } = useCrypto();
+  const { keys, encryptMessageForDirectory, decryptMessageWithSenderKey, generateKeys } = useCrypto();
   useEffect(()=>{ generateKeys(); },[generateKeys]);
+
+  // ── 🛡️ SAFETY NUMBER CALCULATION ──
+  useEffect(() => {
+    async function updateSN() {
+      if (activeConv && directory[activeConv] && keys?.kp?.publicB64) {
+        const sn = await generateSafetyNumber(keys.kp.publicB64, directory[activeConv].publicKey);
+        setSafetyNumber(sn);
+      } else {
+        setSafetyNumber('');
+      }
+    }
+    updateSN();
+  }, [activeConv, directory, keys]);
 
   // ── 🛡️ SCREENSHOT PROTECTION (MOBILE & WEB) ──
   const [isWebBlurred, setIsWebBlurred] = useState(false);
@@ -360,8 +374,19 @@ export default function VanishText() {
              return { ...p, [cid]: c };
            });
            
-           if (typeof document !== 'undefined' && document.visibilityState === 'hidden' && "Notification" in window && Notification.permission === "granted") {
-             new window.Notification("VanishText", { body: "🔒 Message Chiffré reçu" });
+           const canNotify = typeof window !== 'undefined' && 
+                             "Notification" in window && 
+                             window.Notification && 
+                             window.Notification.permission === "granted" &&
+                             typeof document !== 'undefined' && 
+                             document.visibilityState === 'hidden';
+
+           if (canNotify) {
+             try {
+               new window.Notification("VanishText", { body: "🔒 Message Chiffré reçu" });
+             } catch (e) {
+               console.warn("Notification error:", e);
+             }
            }
         }
       }).subscribe();

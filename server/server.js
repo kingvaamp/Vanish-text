@@ -20,6 +20,16 @@ const app    = express();
 const server = http.createServer(app);
 const PORT   = process.env.PORT || 3001;
 
+// ── DIST Check ────────────────────────────────────────────────────
+const fs = require('fs');
+const distPath = path.join(__dirname, '../dist');
+if (!fs.existsSync(distPath) || !fs.existsSync(path.join(distPath, 'index.html'))) {
+  console.error('❌ ERREUR CRITIQUE : Le dossier "dist/" ou "index.html" est introuvable.');
+  console.error('Vérifie que "npm run build" (expo export -p web) a été exécuté avec succès.');
+} else {
+  console.log('✅ Dossier "dist/" détecté.');
+}
+
 // ── CORS ──────────────────────────────────────────────────────────
 const ALLOWED_ORIGINS = [
   process.env.FRONTEND_URL,

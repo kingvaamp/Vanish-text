@@ -9,7 +9,9 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: EXPO_PUBLIC_SUPABASE_URL
-        sync: false   # Set this in the Render dashboard
-      - key: EXPO_PUBLIC_SUPABASE_ANON_KEY
-        sync: false   # Set this in the Render dashboard
+      - key: SUPABASE_URL
+        sync: false   # Add your Supabase URL here for the server
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false   # Add your Service Role Key here for the server
+      - key: FRONTEND_URL
+        value: https://vanish-venx.onrender.com
