@@ -1,7 +1,7 @@
 {
   "name": "vanishtext-backend",
   "version": "1.0.0",
-  "description": "Redis Backend for VanishText",
+  "description": "VanishText Edge Server",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -9,6 +9,8 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^7.4.1",
+    "helmet": "^8.0.0",
     "redis": "^4.6.13",
     "socket.io": "^4.7.5"
   }

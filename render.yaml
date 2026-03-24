@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: vanishtext
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm run build
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: EXPO_PUBLIC_SUPABASE_URL
+        sync: false   # Set this in the Render dashboard
+      - key: EXPO_PUBLIC_SUPABASE_ANON_KEY
+        sync: false   # Set this in the Render dashboard

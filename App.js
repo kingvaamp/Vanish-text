@@ -379,9 +379,11 @@ export default function VanishText() {
         const next={};
         for(const [k,c] of Object.entries(prev)){
           const msgs=c.messages.map(m=>{
-            if(m.isRead&&m.ttl>0){changed=true;return{...m,ttl:m.ttl-1};}
+            // Tick down any message with a running TTL (isRead check removed — sender messages also expire)
+            if(m.ttl>0){changed=true;return{...m,ttl:m.ttl-1};}
             return m;
-          }).filter(m=>!(m.isRead&&m.ttl===0&&m.hasTtl));
+          // Remove messages that have fully expired (ttl reached 0 and hasTtl is set, OR ttl was set > 0 at any point meaning it was started)
+          }).filter(m=>!(m.ttl===0&&m.hasTtl));
           if(msgs.length!==c.messages.length) changed=true;
           next[k]={...c,messages:msgs};
         }

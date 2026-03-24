@@ -2,43 +2,73 @@ const express = require('express');
 const http = require('http');
 const cors = require('cors');
 const path = require('path');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
+
+// ── Security Headers ──────────────────────────────────────────────
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      connectSrc: ["'self'", 'https://*.supabase.co', 'wss://*.supabase.co'],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // Required for Expo web bundles
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:', 'blob:'],
+      fontSrc: ["'self'", 'data:'],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Required for Expo web workers
+}));
+
+// ── CORS ──────────────────────────────────────────────────────────
 const ALLOWED_ORIGINS = [
-  'https://vanish-venx.onrender.com', // Production
+  'https://vanish-venx.onrender.com',
   'http://localhost:3000',
   'http://localhost:3001',
   'http://localhost:8081',
-  'http://localhost:5050'
+  'http://localhost:5050',
 ];
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (ALLOWED_ORIGINS.includes(origin)) {
+    // Allow requests with no origin (mobile apps, curl, Expo Go) or matching whitelist
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error('CORS Policy: Origin not allowed or missing'));
+      // Return 403 without leaking internal policy message
+      callback(null, false);
     }
   },
-  credentials: true
+  credentials: true,
 }));
-const server = http.createServer(app);
 
+// ── Rate Limiting ─────────────────────────────────────────────────
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 200,                  // 200 requests per window per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+});
+app.use(limiter);
+
+// ── Static Files ──────────────────────────────────────────────────
+const server = http.createServer(app);
 const PORT = process.env.PORT || 3001;
 
-// Serve static files from the root dist folder
 app.use(express.static(path.join(__dirname, '../dist')));
 
 app.get('/api', (req, res) => {
-  res.send('VanishText Static Edge Server is running (Supabase Serverless mode)');
+  res.json({ status: 'ok', service: 'VanishText', mode: 'serverless' });
 });
 
-// Fallback to index.html for React Router (SPA routing)
+// SPA fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../dist', 'index.html'));
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Serveur backend démarré sur http://localhost:${PORT}`);
-  console.log(`✅ Architecture Serverless : Routage SPA actif, logique Déléguée à Supabase.`);
+  console.log(`🚀 VanishText server started on port ${PORT}`);
 });
