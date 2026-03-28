@@ -28,6 +28,16 @@ if (!fs.existsSync(distPath) || !fs.existsSync(path.join(distPath, 'index.html')
   console.error('Vérifie que "npm run build" (expo export -p web) a été exécuté avec succès.');
 } else {
   console.log('✅ Dossier "dist/" détecté.');
+  try {
+    const files = fs.readdirSync(distPath);
+    console.log('📂 Contenu de dist/ :', files.join(', '));
+    if (fs.existsSync(path.join(distPath, '_expo/static/js/web'))) {
+       const jsFiles = fs.readdirSync(path.join(distPath, '_expo/static/js/web'));
+       console.log('📦 JS Files :', jsFiles.join(', '));
+    }
+  } catch (err) {
+    console.error('⚠️ Erreur lors du scan de dist/ :', err);
+  }
 }
 
 // ── CORS ──────────────────────────────────────────────────────────
@@ -87,10 +97,38 @@ app.use(generalLimiter);
 // ── Static files ──────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, '../dist')));
 
-app.get('/api/health', (_, res) => res.json({
-  status: 'ok',
-  ts:     new Date().toISOString(),
-}));
+app.get('/api/debug', (_, res) => {
+  try {
+    const distPath = path.join(__dirname, '../dist');
+    const folderExists = fs.existsSync(distPath);
+    let files = [];
+    let jsFiles = [];
+    
+    if (folderExists) {
+      files = fs.readdirSync(distPath);
+      const jsPath = path.join(distPath, '_expo/static/js/web');
+      if (fs.existsSync(jsPath)) {
+        jsFiles = fs.readdirSync(jsPath);
+      }
+    }
+    
+    res.json({
+      folderExists,
+      distPath,
+      files,
+      jsFiles,
+      env: {
+        NODE_ENV: process.env.NODE_ENV,
+        FRONTEND_URL: process.env.FRONTEND_URL,
+        PORT: process.env.PORT,
+        SUPABASE_URL_SET: !!process.env.SUPABASE_URL,
+        EXPO_URL_SET: !!process.env.EXPO_PUBLIC_SUPABASE_URL
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // SPA fallback
 app.get('*', (_, res) => {
