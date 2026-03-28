@@ -449,6 +449,10 @@ export default function VanishText() {
     if(!text.trim()||!cid||!session) return;
     
     const ciphertexts = await encryptMessageForDirectory(text.trim(), directory) || {};
+    if (Object.keys(ciphertexts).length === 0) {
+      console.warn('[VanishText] sendMsg: no recipients in directory — message aborted');
+      return;
+    }
     const localId = nid();
     
     const dbMsg = {
@@ -709,8 +713,8 @@ export default function VanishText() {
                       <span style={{color:C.muted2}}>•</span>
                       <span onClick={async (e)=>{
                         e.stopPropagation();
-                        const sn = await getSafetyNumber(directory[activeConv]?.publicKey);
-                        setSafetyNumber(sn);
+                        const sn = await generateSafetyNumber(keys?.kp?.publicB64, directory[activeConv]?.publicKey);
+                        setSafetyNumber(sn || '');
                         setSecurityOpen(true);
                       }} style={{color:C.red,fontWeight:700,cursor:'pointer',fontSize:10,textDecoration:'underline'}}>Verify Security</span>
                     </div>

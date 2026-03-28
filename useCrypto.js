@@ -84,9 +84,10 @@ export default function useCrypto() {
           if (ratchetCounters[userId] === undefined) ratchetCounters[userId] = 0;
           const msgIndex = ratchetCounters[userId]++;
 
+          // NOTE: label must match decryptMessageWithSenderKey exactly (BUG 5 fix)
           const aesKeyBuf = await hkdf(
             sharedSecret, null,
-            `VanishText-msg-${userId}-${msgIndex}`, 32
+            `VanishText-msg-v3-${msgIndex}`, 32
           );
           const { iv, ciphertext } = await encrypt(aesKeyBuf, plainText);
           ciphertexts[userId] = {
@@ -142,11 +143,10 @@ export default function useCrypto() {
         const senderKeyObj = await importPublicKey(senderPublicKey);
         const sharedSecret = await ecdh(keys.kp.privateKey, senderKeyObj);
 
-        // Dériver la même clé AES en utilisant le même msgIndex (ratchet)
-        const senderId = data.senderId || senderPublicKey.slice(0, 8);
+        // NOTE: label must match encryptMessageForDirectory exactly (BUG 5 fix)
         const aesKeyBuf = await hkdf(
           sharedSecret, null,
-          `VanishText-msg-${senderId}-${msgIndex}`, 32
+          `VanishText-msg-v3-${msgIndex}`, 32
         );
         const plainText = await decrypt(aesKeyBuf, iv, ciphertext);
 

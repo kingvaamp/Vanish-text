@@ -37,6 +37,8 @@ CREATE TABLE public.messages (
   ciphertexts JSONB NOT NULL,
   cid TEXT, -- Optionnel: Identifiant de conversation (peut être masqué aussi si nécessaire)
   read_at TIMESTAMP WITH TIME ZONE,
+  -- BUG 4 FIX: added expires_at column required by the Reaper TTL logic
+  expires_at TIMESTAMP WITH TIME ZONE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
 
@@ -50,6 +52,7 @@ CREATE INDEX idx_usage_log_time ON public.internal_usage_log(created_at);
 
 -- Index pour accélérer la suppression des messages expirés par le "Reaper"
 CREATE INDEX idx_messages_read_at ON public.messages(read_at);
+CREATE INDEX idx_messages_expires_at ON public.messages(expires_at);
 
 -- Enable RLS
 ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
@@ -64,11 +67,18 @@ CREATE POLICY "Users can read intended messages" ON public.messages
     ciphertexts ? auth.uid()::text
   );
 
--- Les utilisateurs peuvent marquer un message comme "lu" (update read_at)
+-- Les utilisateurs peuvent marquer un message comme "lu" (update read_at / expires_at)
 CREATE POLICY "Users can update read_at" ON public.messages 
   FOR UPDATE USING (
     ciphertexts ? auth.uid()::text
   ) WITH CHECK (
+    ciphertexts ? auth.uid()::text
+  );
+
+-- BUG 8 FIX: DELETE policy — recipients can delete their own expired messages
+-- This enables the client-side Reaper AND the server-side purge_vanished_messages RPC to work
+CREATE POLICY "Users can delete intended messages" ON public.messages
+  FOR DELETE USING (
     ciphertexts ? auth.uid()::text
   );
 
