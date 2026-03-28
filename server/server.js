@@ -115,11 +115,14 @@ app.get('/api/debug', (_, res) => {
     res.json({
       folderExists,
       distPath,
+      cwd: process.cwd(),
+      dirname: __dirname,
       files,
       jsFiles,
+      dist_expo_exists: fs.existsSync(path.join(distPath, '_expo/static')),
+      root_files: fs.readdirSync(process.cwd()),
       env: {
         NODE_ENV: process.env.NODE_ENV,
-        FRONTEND_URL: process.env.FRONTEND_URL,
         PORT: process.env.PORT,
         SUPABASE_URL_SET: !!process.env.SUPABASE_URL,
         EXPO_URL_SET: !!process.env.EXPO_PUBLIC_SUPABASE_URL
