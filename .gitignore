@@ -3,9 +3,9 @@
 # dependencies
 node_modules/
 
-# Expo
+# Expo — do NOT ignore dist/ — we commit pre-built web assets for Render deployment
+# (Render free tier, 512 MB RAM, cannot run expo export without OOM-kill)
 .expo/
-dist/
 web-build/
 expo-env.d.ts
 

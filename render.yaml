@@ -4,7 +4,9 @@ services:
     env: node
     region: oregon
     plan: free
-    buildCommand: ./scripts/build.sh
+    # dist/ is pre-built locally and committed to git.
+    # Render free tier (512 MB) cannot run expo export without OOM.
+    buildCommand: npm install
     startCommand: node server.js
     envVars:
       - key: NODE_ENV
@@ -16,7 +18,7 @@ services:
         sync: false
       - key: FRONTEND_URL
         value: https://vanish-venx.onrender.com
-      # ── Frontend (build-time public keys — safe to commit) ────────
+      # ── Frontend public keys (baked into pre-built dist/) ─────────
       - key: EXPO_PUBLIC_SUPABASE_URL
         value: https://ubjsgwpxkcxdpgfsfyjg.supabase.co
       - key: EXPO_PUBLIC_SUPABASE_ANON_KEY
