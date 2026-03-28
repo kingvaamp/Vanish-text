@@ -3,8 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
-const supabaseUrl     = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+const supabaseUrl     = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://ubjsgwpxkcxdpgfsfyjg.supabase.co';
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable__0XmvmW-jjp1VpITIOOe_w_UHKePy78';
 
 if (!supabaseUrl || !supabaseAnonKey) {
   console.error(

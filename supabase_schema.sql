@@ -1,6 +1,8 @@
 -- 🚀 VANISHTEXT SUPABASE E2E SCHEMA 🚀
 -- Veuillez exécuter ce script dans le SQL Editor de votre projet Supabase.
 
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
 -- 1. Table des Profils (Annuaire PKI)
 CREATE TABLE public.profiles (
   id UUID REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
