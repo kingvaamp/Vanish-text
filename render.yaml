@@ -9,15 +9,15 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      # ── Backend (runtime) ──────────────────────────────────────────
+      # ── Backend (runtime secrets — set in Render Dashboard) ───────
       - key: SUPABASE_URL
-        sync: false   # Set in Render Dashboard: your Supabase Project URL
+        sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false   # Set in Render Dashboard: your Supabase Service Role key
+        sync: false
       - key: FRONTEND_URL
         value: https://vanish-venx.onrender.com
-      # ── Frontend (build-time, baked into JS bundle by expo export) ─
+      # ── Frontend (build-time public keys — safe to commit) ────────
       - key: EXPO_PUBLIC_SUPABASE_URL
-        sync: false   # SAME value as SUPABASE_URL — needed at build time
+        value: https://ubjsgwpxkcxdpgfsfyjg.supabase.co
       - key: EXPO_PUBLIC_SUPABASE_ANON_KEY
-        sync: false   # Set in Render Dashboard: your Supabase anon/public key
+        value: sb_publishable__0XmvmW-jjp1VpITIOOe_w_UHKePy78

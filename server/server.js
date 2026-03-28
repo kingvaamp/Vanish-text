@@ -1,43 +1,43 @@
-// server/server.js — Version sécurisée complète
+// server/server.js — Production server for VanishText
 'use strict';
 
-const express    = require('express');
-const http       = require('http');
-const path       = require('path');
-const cors       = require('cors');
-const rateLimit  = require('express-rate-limit');
-const helmet     = require('helmet');
+const express   = require('express');
+const http      = require('http');
+const path      = require('path');
+const cors      = require('cors');
+const rateLimit = require('express-rate-limit');
+const helmet    = require('helmet');
+const fs        = require('fs');
 
-// ── Validation des variables d'environnement ─────────────────────
+// ── Environment validation ────────────────────────────────────────
 const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];
 const missing = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missing.length > 0) {
-  console.warn(`⚠️  Variables manquantes (fonctionnement dégradé) : ${missing.join(', ')}`);
-  // Ne pas quitter — le serveur peut encore servir le frontend sans Socket.io auth
+  console.warn(`⚠️  Missing env vars (degraded mode): ${missing.join(', ')}`);
 }
 
 const app    = express();
 const server = http.createServer(app);
 const PORT   = process.env.PORT || 3001;
 
-// ── DIST Check ────────────────────────────────────────────────────
-const fs = require('fs');
+// ── DIST validation ───────────────────────────────────────────────
 const distPath = path.join(__dirname, '../dist');
-if (!fs.existsSync(distPath) || !fs.existsSync(path.join(distPath, 'index.html'))) {
-  console.error('❌ ERREUR CRITIQUE : Le dossier "dist/" ou "index.html" est introuvable.');
-  console.error('Vérifie que "npm run build" (expo export -p web) a été exécuté avec succès.');
+const distIndexPath = path.join(distPath, 'index.html');
+const distExpoPath = path.join(distPath, '_expo');
+
+if (!fs.existsSync(distIndexPath)) {
+  console.error('❌ CRITICAL: dist/index.html not found. Build may have failed.');
 } else {
-  console.log('✅ Dossier "dist/" détecté.');
-  try {
-    const files = fs.readdirSync(distPath);
-    console.log('📂 Contenu de dist/ :', files.join(', '));
-    if (fs.existsSync(path.join(distPath, '_expo/static/js/web'))) {
-       const jsFiles = fs.readdirSync(path.join(distPath, '_expo/static/js/web'));
-       console.log('📦 JS Files :', jsFiles.join(', '));
-    }
-  } catch (err) {
-    console.error('⚠️ Erreur lors du scan de dist/ :', err);
-  }
+  console.log('✅ dist/index.html found.');
+}
+
+if (!fs.existsSync(distExpoPath)) {
+  console.error('❌ CRITICAL: dist/_expo not found. JS bundles are missing!');
+} else {
+  const jsBundles = fs.existsSync(path.join(distExpoPath, 'static/js/web'))
+    ? fs.readdirSync(path.join(distExpoPath, 'static/js/web'))
+    : [];
+  console.log(`✅ dist/_expo found. JS bundles: ${jsBundles.join(', ')}`);
 }
 
 // ── CORS ──────────────────────────────────────────────────────────
@@ -51,100 +51,66 @@ const ALLOWED_ORIGINS = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow null/missing origin (mobile apps, Expo Go, curl)
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
-      return callback(null, true);
-    }
-    // In production block unknown origins silently (no error message leakage)
-    if (process.env.NODE_ENV === 'production') {
-      return callback(null, false);
-    }
-    return callback(null, true); // Dev: permissive
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    if (process.env.NODE_ENV === 'production') return callback(null, false);
+    return callback(null, true);
   },
   credentials:    true,
   methods:        ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// ── Helmet (security headers) ────────────────────────────────────
+// ── Security headers ──────────────────────────────────────────────
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc:  ["'self'"],
       connectSrc:  ["'self'", 'https://*.supabase.co', 'wss://*.supabase.co'],
-      scriptSrc:   ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // Required by Expo web
+      scriptSrc:   ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
       styleSrc:    ["'self'", "'unsafe-inline'"],
       imgSrc:      ["'self'", 'data:', 'blob:'],
       fontSrc:     ["'self'", 'data:'],
     },
   },
-  hsts:                        { maxAge: 31536000, includeSubDomains: true, preload: true },
-  crossOriginEmbedderPolicy:   false, // Required for Expo web workers
+  hsts:                      { maxAge: 31536000, includeSubDomains: true, preload: true },
+  crossOriginEmbedderPolicy: false,
 }));
 
 app.use(express.json({ limit: '50kb' }));
 
-// ── Rate Limiting ─────────────────────────────────────────────────
-const generalLimiter = rateLimit({
+// ── Rate limiting ─────────────────────────────────────────────────
+app.use(rateLimit({
   windowMs:        15 * 60 * 1000,
   max:             200,
   standardHeaders: true,
   legacyHeaders:   false,
-  message: { error: 'Trop de requêtes. Réessaie dans 15 minutes.' },
-});
-app.use(generalLimiter);
+  message: { error: 'Too many requests. Try again in 15 minutes.' },
+}));
 
-// ── Static files ──────────────────────────────────────────────────
-app.use(express.static(path.join(__dirname, '../dist')));
+// ── API routes (BEFORE static/SPA fallback) ───────────────────────
+app.get('/api/health', (_, res) => res.json({
+  status: 'ok',
+  ts:     new Date().toISOString(),
+  dist_expo_exists: fs.existsSync(distExpoPath),
+}));
 
-app.get('/api/debug', (_, res) => {
-  try {
-    const distPath = path.join(__dirname, '../dist');
-    const folderExists = fs.existsSync(distPath);
-    let files = [];
-    let jsFiles = [];
-    
-    if (folderExists) {
-      files = fs.readdirSync(distPath);
-      const jsPath = path.join(distPath, '_expo/static/js/web');
-      if (fs.existsSync(jsPath)) {
-        jsFiles = fs.readdirSync(jsPath);
-      }
-    }
-    
-    let buildLog = '';
-    if (fs.existsSync(path.join(process.cwd(), 'build.log'))) {
-      buildLog = fs.readFileSync(path.join(process.cwd(), 'build.log'), 'utf8');
-    }
+// ── Static files (explicit _expo first, then root dist) ───────────
+// Serve _expo explicitly to guarantee correct MIME types
+app.use('/_expo', express.static(path.join(distPath, '_expo'), {
+  maxAge: '1y',
+  immutable: true,
+}));
+app.use(express.static(distPath));
 
-    res.json({
-      folderExists,
-      distPath,
-      cwd: process.cwd(),
-      dirname: __dirname,
-      buildLog,
-      files,
-      jsFiles,
-      dist_expo_exists: fs.existsSync(path.join(distPath, '_expo/static')),
-      root_files: fs.readdirSync(process.cwd()),
-      env: {
-        NODE_ENV: process.env.NODE_ENV,
-        PORT: process.env.PORT,
-        SUPABASE_URL_SET: !!process.env.SUPABASE_URL,
-        EXPO_URL_SET: !!process.env.EXPO_PUBLIC_SUPABASE_URL
-      }
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// SPA fallback
+// ── SPA fallback (LAST) ───────────────────────────────────────────
 app.get('*', (_, res) => {
-  res.sendFile(path.join(__dirname, '../dist', 'index.html'));
+  if (!fs.existsSync(distIndexPath)) {
+    return res.status(503).send('App not built yet. Please wait for deployment to complete.');
+  }
+  res.sendFile(distIndexPath);
 });
 
-// ── Socket.io with JWT validation (optional — only if env vars are set) ──
+// ── Socket.io (only if Supabase credentials are set) ─────────────
 if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
   const { Server }       = require('socket.io');
   const { createClient } = require('@supabase/supabase-js');
@@ -155,13 +121,12 @@ if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
   );
 
   const io = new Server(server, {
-    cors: { origin: ALLOWED_ORIGINS, methods: ['GET', 'POST'] },
+    cors:         { origin: ALLOWED_ORIGINS, methods: ['GET', 'POST'] },
     transports:   ['websocket', 'polling'],
     pingTimeout:  20000,
     pingInterval: 10000,
   });
 
-  // JWT validation middleware
   io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error('AUTH_REQUIRED'));
@@ -176,17 +141,15 @@ if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
   });
 
   io.on('connection', (socket) => {
-    console.log(`[Socket] Connecté : ${socket.userId}`);
+    console.log(`[Socket] Connected: ${socket.userId}`);
     socket.join(`user:${socket.userId}`);
-    socket.on('disconnect', () => {
-      console.log(`[Socket] Déconnecté : ${socket.userId}`);
-    });
+    socket.on('disconnect', () => console.log(`[Socket] Disconnected: ${socket.userId}`));
   });
 
-  console.log('✓ Socket.io avec validation JWT activé');
+  console.log('✓ Socket.io with JWT validation enabled');
 }
 
 // ── Start ─────────────────────────────────────────────────────────
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 VanishText Backend — Port ${PORT} | CORS: ${ALLOWED_ORIGINS.length} origines | Helmet: actif`);
+  console.log(`🚀 VanishText — Port ${PORT} | Env: ${process.env.NODE_ENV} | CORS: ${ALLOWED_ORIGINS.length} origins`);
 });
