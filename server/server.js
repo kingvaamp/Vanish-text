@@ -112,11 +112,17 @@ app.get('/api/debug', (_, res) => {
       }
     }
     
+    let buildLog = '';
+    if (fs.existsSync(path.join(process.cwd(), 'build.log'))) {
+      buildLog = fs.readFileSync(path.join(process.cwd(), 'build.log'), 'utf8');
+    }
+
     res.json({
       folderExists,
       distPath,
       cwd: process.cwd(),
       dirname: __dirname,
+      buildLog,
       files,
       jsFiles,
       dist_expo_exists: fs.existsSync(path.join(distPath, '_expo/static')),

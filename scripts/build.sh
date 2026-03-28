@@ -14,19 +14,19 @@ rm -rf dist web-build
 
 # 3. Run Expo Web Export
 echo "🛠️ Exporting Expo Web..."
-CI=1 npx expo export -p web
+CI=1 npx expo export -p web > build.log 2>&1
 
 # 4. Verify Output
 if [ -d "dist/_expo" ]; then
-  echo "✅ Expo export success: dist/_expo folder detected."
+  echo "✅ Expo export success: dist/_expo folder detected." >> build.log
 elif [ -d "web-build/_expo" ]; then
-  echo "⚠️ Note: Expo exported to web-build instead of dist. Moving files..."
+  echo "⚠️ Note: Expo exported to web-build instead of dist. Moving files..." >> build.log
   mv web-build/* dist/
   mv web-build/.* dist/ 2>/dev/null || true
   rm -rf web-build
 else
-  echo "❌ ERROR: Neither dist/_expo nor web-build/_expo found after build!"
-  ls -la
+  echo "❌ ERROR: Neither dist/_expo nor web-build/_expo found after build!" >> build.log
+  ls -la >> build.log
   exit 1
 fi
 
