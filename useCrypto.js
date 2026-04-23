@@ -12,6 +12,7 @@ import {
 import {
   saveIdentityKey,
   loadIdentityKey,
+  wipeAllKeys,
 } from './src/storage/KeyStorage';
 
 // Compteur de ratchet en mémoire par destinataire
@@ -38,9 +39,9 @@ export default function useCrypto() {
   const [keys, setKeys] = useState(null);
 
   // Génère ou restaure les clés d'identité depuis le Keychain
-  const generateKeys = useCallback(async () => {
+  const generateKeys = useCallback(async (uid) => {
     try {
-      const saved = await loadIdentityKey();
+      const saved = await loadIdentityKey(uid);
       if (saved) {
         const privateKey = await importPrivateKey(saved.privateJwk);
         const kp = {
@@ -51,19 +52,25 @@ export default function useCrypto() {
         };
         const k = { type: 'identity', kp };
         setKeys(k);
-        console.log('[Crypto] ✓ Clés restaurées depuis le Keychain');
+        console.log(`[Crypto] ✓ Clés restaurées pour ${uid || 'global'}`);
         return k;
       }
       const myKeys = await generateKeyPair();
-      await saveIdentityKey({ privateJwk: myKeys.privateJwk, publicB64: myKeys.publicB64 });
+      await saveIdentityKey(uid, { privateJwk: myKeys.privateJwk, publicB64: myKeys.publicB64 });
       const k = { type: 'identity', kp: myKeys };
       setKeys(k);
-      console.log('[Crypto] ✓ Nouvelles clés générées et sauvegardées');
+      console.log(`[Crypto] ✓ Nouvelles clés générées pour ${uid || 'global'}`);
       return k;
     } catch (e) {
       console.error('[Crypto] Erreur generateKeys :', e);
       return null;
     }
+  }, []);
+
+  const wipeKeys = useCallback(async (uid) => {
+    await wipeAllKeys(uid);
+    setKeys(null);
+    console.log(`[Crypto] Identity wiped for ${uid || 'global'}.`);
   }, []);
 
   // Chiffre un message pour N destinataires (N-Way ECDH + ratchet basique)
@@ -134,7 +141,8 @@ export default function useCrypto() {
           data = payload;
         }
 
-        const { iv, ciphertext, senderPublicKey, msgIndex = 0 } = data;
+        const { iv, ciphertext, senderPublicKey } = data;
+        const msgIndex = Number(data.msgIndex || 0);
 
         if (!senderPublicKey) {
           return { t: '[Erreur : clé expéditeur manquante]', s: null };
@@ -143,31 +151,48 @@ export default function useCrypto() {
         const senderKeyObj = await importPublicKey(senderPublicKey);
         const sharedSecret = await ecdh(keys.kp.privateKey, senderKeyObj);
 
-        // NOTE: label must match encryptMessageForDirectory exactly (BUG 5 fix)
-        const aesKeyBuf = await hkdf(
-          sharedSecret, null,
-          `VanishText-msg-v3-${msgIndex}`, 32
-        );
-        const plainText = await decrypt(aesKeyBuf, iv, ciphertext);
+        // ESSAI DE DÉCHIFFREMENT AVEC PLUSIEURS VERSIONS DE LABEL HKDF (BUG 5 FIX EXTENDED)
+        const LABELS = [
+          `VanishText-msg-v3-${msgIndex}`,
+          `VanishText-msg-v2-${msgIndex}`,
+          `VanishText-msg-v1-${msgIndex}`,
+          `VanishText-msg-v5-${msgIndex}`
+        ];
 
-        try {
-          // Support Sealed Sender (objet { t, s })
-          const parsed = JSON.parse(plainText);
-          return { t: parsed.t || plainText, s: parsed.s || senderPublicKey };
-        } catch (_) {
-          return { t: plainText, s: senderPublicKey };
+        let lastError = null;
+        for (const label of LABELS) {
+          try {
+            const aesKeyBuf = await hkdf(sharedSecret, null, label, 32);
+            const plainText = await decrypt(aesKeyBuf, iv, ciphertext);
+            
+            // Si on arrive ici, le déchiffrement a réussi !
+            try {
+              // Support Sealed Sender (objet { t, s })
+              const parsed = JSON.parse(plainText);
+              return { t: parsed.t || plainText, s: parsed.s || senderPublicKey };
+            } catch (_) {
+              return { t: plainText, s: senderPublicKey };
+            }
+          } catch (e) {
+            lastError = e;
+            continue; // On essaye le label suivant
+          }
         }
+
+        // Si on a épuisé tous les labels
+        throw new Error(lastError ? lastError.message : 'Auth Tag failure on all labels');
+
       } catch (e) {
-        console.error('[Crypto] Erreur déchiffrement :', e.message);
-        return { t: '[Impossible de déchiffrer ce message]', s: null };
+        console.error('[Crypto] Erreur déchiffrement critique :', e.message);
+        return { t: '[Déchiffrement échoué : Clé ou Index incorrect]', s: null };
       }
     },
     [keys]
   );
 
   return {
-    keys,
     generateKeys,
+    wipeKeys,
     encryptMessageForDirectory,
     decryptMessageWithSenderKey,
   };

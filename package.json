@@ -38,5 +38,9 @@
     "sharp": "^0.33.5",
     "socket.io": "^4.7.5"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "@types/react": "~19.2.10",
+    "typescript": "~5.9.2"
+  }
 }

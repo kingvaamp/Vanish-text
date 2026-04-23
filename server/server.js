@@ -1,6 +1,8 @@
 // server/server.js — Production server for VanishText
 'use strict';
 
+require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
+
 const express   = require('express');
 const http      = require('http');
 const path      = require('path');
@@ -10,6 +12,9 @@ const helmet    = require('helmet');
 const fs        = require('fs');
 
 // ── Environment validation ────────────────────────────────────────
+// Support both standard and Expo-prefixed keys for local convenience
+process.env.SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
+
 const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];
 const missing = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missing.length > 0) {

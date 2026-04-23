@@ -31,10 +31,31 @@ const C = {
 const F = "Helvetica,'Helvetica Neue',Arial,sans-serif";
 
 function LoginScreen({ onLogin }) {
+  const [method, setMethod] = useState('phone'); // 'phone' or 'email'
   const [step, setStep] = useState('phone');
   const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('mohafalilou4@gmail.com');
+  const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  const handleEmailAuth = async () => {
+    if (!email || !password) return alert("Veuillez remplir tous les champs.");
+    setLoading(true);
+    let res;
+    if (isSignUp) {
+      res = await supabase.auth.signUp({ email, password });
+    } else {
+      res = await supabase.auth.signInWithPassword({ email, password });
+    }
+    setLoading(false);
+    if (res.error) {
+      alert("Erreur: " + res.error.message);
+    } else {
+      // Session handling is automatic via onAuthStateChange in VanishText
+    }
+  };
 
   return (
     <div style={{position:'absolute',inset:0,background:C.bg,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',fontFamily:F,color:C.text,zIndex:100}}>
@@ -43,54 +64,75 @@ function LoginScreen({ onLogin }) {
           <svg width="32" height="32" viewBox="0 0 24 24" fill="white"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2"/></svg>
         </div>
         <h1 style={{fontSize:28,fontWeight:800,marginBottom:8,letterSpacing:'-0.03em'}}>VanishText</h1>
-        <p style={{fontSize:15,color:C.muted,marginBottom:40,textAlign:'center',lineHeight:1.5}}>Enter your phone number to get started or sign in with Google.</p>
+        <p style={{fontSize:15,color:C.muted,marginBottom:30,textAlign:'center',lineHeight:1.5}}>Enter your details to get started or sign in via Google.</p>
+
+        {/* Auth Method Switcher */}
+        <div style={{display:'flex',gap:2,background:C.s2,borderRadius:12,padding:3,marginBottom:24,width:'100%'}}>
+          <button onClick={()=>{setMethod('phone');setStep('phone');}} style={{flex:1,padding:'10px',borderRadius:9,fontSize:13,fontWeight:700,border:'none',background:method==='phone'?C.s4:'transparent',color:method==='phone'?'#fff':C.muted,cursor:'pointer',transition:'all 0.2s'}}>Phone Number</button>
+          <button onClick={()=>setMethod('email')} style={{flex:1,padding:'10px',borderRadius:9,fontSize:13,fontWeight:700,border:'none',background:method==='email'?C.s4:'transparent',color:method==='email'?'#fff':C.muted,cursor:'pointer',transition:'all 0.2s'}}>Email / Test</button>
+        </div>
 
         <div style={{width:'100%',background:C.s1,border:`1px solid ${C.border}`,borderRadius:20,padding:24,display:'flex',flexDirection:'column',gap:16}}>
-          {step === 'phone' ? (
-            <>
-              <div style={{background:C.s3,borderRadius:12,padding:'8px 14px',border:`1px solid ${C.border}`}}>
-                <div style={{fontSize:11,color:C.muted,fontWeight:700,marginBottom:4,textTransform:'uppercase',letterSpacing:1}}>Phone Number</div>
-                <input type="tel" value={phone} onChange={e=>setPhone(e.target.value)} placeholder="+1 234 567 8900" style={{width:'100%',background:'transparent',border:'none',color:'#fff',fontSize:18,outline:'none',fontFamily:F}} />
-              </div>
-              <button onClick={async ()=>{
-                const cleanPhone = phone.replace(/[^\d+]/g, '');
-                if(cleanPhone.length < 8) return; 
-                setLoading(true);
-                const { error } = await supabase.auth.signInWithOtp({ phone: cleanPhone });
-                setLoading(false);
-                if (error) {
-                  alert("Error: " + error.message);
-                } else {
-                  setStep('code');
-                }
-              }} disabled={loading || phone.replace(/[^\d+]/g, '').length < 8} style={{width:'100%',padding:'16px',borderRadius:12,fontSize:16,fontWeight:700,background:phone.replace(/[^\d+]/g, '').length>=8?C.red:C.s4,color:phone.replace(/[^\d+]/g, '').length>=8?'#fff':C.muted,border:'none',cursor:phone.replace(/[^\d+]/g, '').length>=8?'pointer':'not-allowed',transition:'all 0.2s',opacity:loading?0.7:1}}>
-                {loading ? 'Sending SMS...' : 'Continue'}
-              </button>
-            </>
+          {method === 'phone' ? (
+            step === 'phone' ? (
+              <>
+                <div style={{background:C.s3,borderRadius:12,padding:'8px 14px',border:`1px solid ${C.border}`}}>
+                  <div style={{fontSize:11,color:C.muted,fontWeight:700,marginBottom:4,textTransform:'uppercase',letterSpacing:1}}>Phone Number</div>
+                  <input type="tel" value={phone} onChange={e=>setPhone(e.target.value)} placeholder="+1 234 567 8900" style={{width:'100%',background:'transparent',border:'none',color:'#fff',fontSize:18,outline:'none',fontFamily:F}} />
+                </div>
+                <button onClick={async ()=>{
+                  const cleanPhone = phone.replace(/[^\d+]/g, '');
+                  if(cleanPhone.length < 8) return; 
+                  setLoading(true);
+                  const { error } = await supabase.auth.signInWithOtp({ phone: cleanPhone });
+                  setLoading(false);
+                  if (error) {
+                    alert("Error: " + error.message);
+                  } else {
+                    setStep('code');
+                  }
+                }} disabled={loading || phone.replace(/[^\d+]/g, '').length < 8} style={{width:'100%',padding:'16px',borderRadius:12,fontSize:16,fontWeight:700,background:phone.replace(/[^\d+]/g, '').length>=8?C.red:C.s4,color:phone.replace(/[^\d+]/g, '').length>=8?'#fff':C.muted,border:'none',cursor:phone.replace(/[^\d+]/g, '').length>=8?'pointer':'not-allowed',transition:'all 0.2s',opacity:loading?0.7:1}}>
+                  {loading ? 'Sending SMS...' : 'Continue'}
+                </button>
+              </>
+            ) : (
+              <>
+                <div style={{background:C.s3,borderRadius:12,padding:'8px 14px',border:`1px solid ${C.border}`}}>
+                  <div style={{fontSize:11,color:C.muted,fontWeight:700,marginBottom:4,textTransform:'uppercase',letterSpacing:1}}>Verification Code (SMS)</div>
+                  <input type="number" autoFocus value={code} onChange={e=>setCode(e.target.value)} placeholder="000 000" style={{width:'100%',background:'transparent',border:'none',color:'#fff',fontSize:18,outline:'none',fontFamily:F,letterSpacing:4}} />
+                </div>
+                <button onClick={async ()=>{
+                  if(code.length !== 6) return; 
+                  setLoading(true);
+                  const { data, error } = await supabase.auth.verifyOtp({ 
+                    phone: phone.replace(/[^\d+]/g, ''), 
+                    token: code, 
+                    type: 'sms' 
+                  });
+                  setLoading(false);
+                  if (error) {
+                    alert("Verification failed: " + error.message);
+                  }
+                }} disabled={loading || code.length !== 6} style={{width:'100%',padding:'16px',borderRadius:12,fontSize:16,fontWeight:700,background:code.length===6?C.red:C.s4,color:code.length===6?'#fff':C.muted,border:'none',cursor:code.length===6?'pointer':'not-allowed',transition:'all 0.2s',opacity:loading?0.7:1}}>
+                  {loading ? 'Verifying...' : 'Sign In'}
+                </button>
+                <button onClick={()=>{setStep('phone');setCode('');}} style={{background:'transparent',border:'none',color:C.muted,fontSize:14,cursor:'pointer',marginTop:4}}>← Back</button>
+              </>
+            )
           ) : (
             <>
               <div style={{background:C.s3,borderRadius:12,padding:'8px 14px',border:`1px solid ${C.border}`}}>
-                <div style={{fontSize:11,color:C.muted,fontWeight:700,marginBottom:4,textTransform:'uppercase',letterSpacing:1}}>Verification Code (SMS)</div>
-                <input type="number" autoFocus value={code} onChange={e=>setCode(e.target.value)} placeholder="000 000" style={{width:'100%',background:'transparent',border:'none',color:'#fff',fontSize:18,outline:'none',fontFamily:F,letterSpacing:4}} />
+                <div style={{fontSize:11,color:C.muted,fontWeight:700,marginBottom:4,textTransform:'uppercase',letterSpacing:1}}>Email Address</div>
+                <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="Email" style={{width:'100%',background:'transparent',border:'none',color:'#fff',fontSize:18,outline:'none',fontFamily:F}} />
               </div>
-              <button onClick={async ()=>{
-                if(code.length !== 6) return; 
-                setLoading(true);
-                const { data, error } = await supabase.auth.verifyOtp({ 
-                  phone: phone.replace(/[^\d+]/g, ''), 
-                  token: code, 
-                  type: 'sms' 
-                });
-                setLoading(false);
-                if (error) {
-                  alert("Verification failed: " + error.message);
-                } else if (data?.session) {
-                  // Authentication complete - trigger state update
-                }
-              }} disabled={loading || code.length !== 6} style={{width:'100%',padding:'16px',borderRadius:12,fontSize:16,fontWeight:700,background:code.length===6?C.red:C.s4,color:code.length===6?'#fff':C.muted,border:'none',cursor:code.length===6?'pointer':'not-allowed',transition:'all 0.2s',opacity:loading?0.7:1}}>
-                {loading ? 'Verifying...' : 'Sign In'}
+              <div style={{background:C.s3,borderRadius:12,padding:'8px 14px',border:`1px solid ${C.border}`}}>
+                <div style={{fontSize:11,color:C.muted,fontWeight:700,marginBottom:4,textTransform:'uppercase',letterSpacing:1}}>Password</div>
+                <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••" style={{width:'100%',background:'transparent',border:'none',color:'#fff',fontSize:18,outline:'none',fontFamily:F}} />
+              </div>
+              <button onClick={handleEmailAuth} disabled={loading} style={{width:'100%',padding:'16px',borderRadius:12,fontSize:16,fontWeight:700,background:C.red,color:'#fff',border:'none',cursor:'pointer',transition:'all 0.2s',opacity:loading?0.7:1}}>
+                {loading ? (isSignUp ? 'Signing Up...' : 'Signing In...') : (isSignUp ? 'Create Test Account' : 'Sign In')}
               </button>
-              <button onClick={()=>{setStep('phone');setCode('');}} style={{background:'transparent',border:'none',color:C.muted,fontSize:14,cursor:'pointer',marginTop:4}}>← Back</button>
+              <button onClick={()=>setIsSignUp(!isSignUp)} style={{background:'transparent',border:'none',color:C.muted,fontSize:14,cursor:'pointer',marginTop:4}}>{isSignUp ? 'Already have an account? Sign In' : "Don't have an account? Sign Up"}</button>
             </>
           )}
         </div>
@@ -222,8 +264,14 @@ export default function VanishText() {
   const [expoPushToken, setExpoPushToken] = useState('');
   const [directory, setDirectory] = useState({});
 
-  const { keys, encryptMessageForDirectory, decryptMessageWithSenderKey, generateKeys } = useCrypto();
-  useEffect(()=>{ generateKeys(); },[generateKeys]);
+  const { keys, encryptMessageForDirectory, decryptMessageWithSenderKey, generateKeys, wipeKeys } = useCrypto();
+  
+  // ── 🔑 KEY LIFECYCLE ──
+  useEffect(() => {
+    if (session?.user?.id) {
+      generateKeys(session.user.id);
+    }
+  }, [session, generateKeys]);
 
   // ── 🛡️ SAFETY NUMBER CALCULATION ──
   useEffect(() => {
@@ -350,13 +398,22 @@ export default function VanishText() {
            let discoveredSenderId = null;
            if (decryptedObj.s) {
              const found = Object.entries(directory).find(([id, p]) => p.publicKey === decryptedObj.s);
-             if (found) discoveredSenderId = found[0];
+             if (found) {
+               discoveredSenderId = found[0];
+             } else {
+               // Fallback: If not found in current directory, re-fetch once
+               await fetchDirectory();
+               const foundRetry = Object.entries(directory).find(([id, p]) => p.publicKey === decryptedObj.s);
+               if (foundRetry) discoveredSenderId = foundRetry[0];
+             }
            }
 
            const formattedMsg = {
              id: m.id, type: 'text', text: decryptedObj.t,
+             ciphertexts: m.ciphertexts, // <-- FIX 1: Indispensable pour readMsg
              sender: discoveredSenderId, time: now(), isRead: false,
-             ttl: 0, hasTtl: false, cid: m.cid || (discoveredSenderId || 'unknown')
+             ttl: 0, hasTtl: false, cid: m.cid || (discoveredSenderId || 'unknown'),
+             enc: rnd(6)+'…'+rnd(8) // <-- UI consistency
            };
 
            setConvs(p => {
@@ -465,7 +522,13 @@ export default function VanishText() {
     supabase.from('messages').insert([dbMsg]).then(({ error }) => { if (error) console.error("Send error", error); });
 
     // Interface Locale (Affiche instantanément)
-    const mLocal = { id: localId, type: 'text', text: text.trim(), sender: session.user.id, time: now(), status: 'sent', isRead: false, ttl: 0, hasTtl: false, cid };
+    const mLocal = { 
+      id: localId, type: 'text', text: text.trim(), 
+      ciphertexts, // <-- FIX 2: Permet au sender de "révéler" son message
+      sender: session.user.id, time: now(), status: 'sent', isRead: false, 
+      ttl: 0, hasTtl: false, cid,
+      enc: rnd(6)+'…'+rnd(8)
+    };
     setConvs(p=>{const c={...p[cid]};c.messages=[...c.messages,mLocal];c[view==='alice'?'uB':'uA']=(c[view==='alice'?'uB':'uA']||0)+1;return{...p,[cid]:c};});
     setInput('');
     setTimeout(()=>setConvs(p=>{const c={...p[cid]};c.messages=c.messages.map(x=>x.id===localId?{...x,status:'delivered'}:x);return{...p,[cid]:c};}),700);
@@ -552,14 +615,14 @@ export default function VanishText() {
       if(!convs[cid]) setConvs(p=>({...p,[cid]:{id:cid,name:ct.name,phone:ct.phone,online:ct.online,messages:[],uA:0,uB:0}}));
       setTimeout(()=>{
         const localId = nid();
-        const m={id:localId, text:baseText, sender:session?.user?.id || view, time:now(), status:'sent', isRead:false, ttl:0, hasTtl:false, enc:rnd(6)+'…'+rnd(8), bc:true, cid, ...mediaProps};
+        const m={id:localId, text:baseText, ciphertexts, sender:session?.user?.id || view, time:now(), status:'sent', isRead:false, ttl:0, hasTtl:false, enc:rnd(6)+'…'+rnd(8), bc:true, cid, ...mediaProps};
         
         supabase.from('messages').insert([{
           id: localId,
-          sender_id: session?.user?.id,
           ciphertexts,
-          cid
-        }]).then(({ error }) => { if(error) console.error("Send error", error); });
+          cid,
+          sender_id: session?.user?.id || null 
+        }]).then(({ error }) => { if(error) console.error("BC error", error); });
 
         setConvs(p=>{const c={...p[cid]||{id:cid,name:ct.name,phone:ct.phone,online:ct.online,messages:[],uA:0,uB:0}};c.messages=[...c.messages,m];c[view==='alice'?'uB':'uA']=(c[view==='alice'?'uB':'uA']||0)+1;return{...p,[cid]:c};});
         setTimeout(()=>setConvs(p=>({...p,[cid]:{...p[cid],messages:p[cid].messages.map(x=>x.id===m.id?{...x,status:'delivered'}:x)}})),700);
@@ -1009,9 +1072,26 @@ export default function VanishText() {
               ))}
             </div>
           </div>
+          {/* Technical Info Debug */}
+          {keys?.kp && (
+            <div style={{padding:'0 16px 16px'}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:'.08em',textTransform:'uppercase',padding:'8px 0'}}>Technical Identity</div>
+              <div style={{background:C.s2,borderRadius:12,padding:'12px',border:`1px solid ${C.border}`,fontFamily:'monospace'}}>
+                <div style={{fontSize:10,color:C.muted,marginBottom:4}}>User ID: <span style={{color:C.text2}}>{session?.user?.id}</span></div>
+                <div style={{fontSize:10,color:C.muted}}>Public Key: <span style={{color:C.rb}}>{keys.kp.publicB64.slice(0,16)}…</span></div>
+              </div>
+            </div>
+          )}
+
           <div style={{padding:'0 16px 32px',display:'flex',flexDirection:'column',gap:10}}>
+            <div key="wipe" onClick={async ()=>{if(confirm('Are you sure? This will permanently break existing E2E chats.')){await wipeKeys(session?.user?.id); await supabase.auth.signOut();}}} style={{padding:'13px 16px',background:C.s1,border:'1px solid rgba(255,165,0,.15)',borderRadius:11,display:'flex',alignItems:'center',gap:11,cursor:'pointer'}}>
+               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ffa500" strokeWidth="2" strokeLinecap="round">
+                 <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3m-3-3l-2.5-2.5"/>
+               </svg>
+               <span style={{fontSize:14,fontWeight:600,color:'#ffa500'}}>Wipe Identity Keys</span>
+            </div>
             {['Log Out','Delete Account'].map(label=>(
-              <div key={label} style={{padding:'13px 16px',background:C.s1,border:'1px solid rgba(255,50,50,.15)',borderRadius:11,display:'flex',alignItems:'center',gap:11,cursor:'pointer'}}>
+              <div key={label} onClick={async ()=>{if(label==='Log Out') { await wipeKeys(session?.user?.id); await supabase.auth.signOut(); }}} style={{padding:'13px 16px',background:C.s1,border:'1px solid rgba(255,50,50,.15)',borderRadius:11,display:'flex',alignItems:'center',gap:11,cursor:'pointer'}}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ff3333" strokeWidth="2" strokeLinecap="round">
                   {label==='Log Out'?<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></>:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></>}
                 </svg>
@@ -1254,8 +1334,8 @@ export default function VanishText() {
           return (
             <button key={t.id} onClick={async ()=>{
               if(t.id==='logout'){
-                if(!window.confirm('Sign out and wipe local keys?')) return;
-                await wipeAllKeys();
+                if(!window.confirm('Sign out and wipe local session?')) return;
+                await wipeKeys(session?.user?.id);
                 await supabase.auth.signOut();
                 setIsAuthenticated(false);
                 setSession(null);
