@@ -64,8 +64,22 @@ function ConversationRow({ conv, onClick }) {
 // ============================================
 // Message Bubble
 // ============================================
-function MessageBubble({ message, isSent, onDecrypt, ttl }) {
+function MessageBubble({ message, isSent, onDecrypt }) {
   const [glitching, setGlitching] = useState(false);
+  const [ttl, setTtl] = useState(message.ttl || 180);
+
+  useEffect(() => {
+    if (message.isRead && !message.locked && message.decryptedAt) {
+      const updateTtl = () => {
+        const elapsed = Math.floor((Date.now() - message.decryptedAt) / 1000);
+        setTtl(Math.max(0, 180 - elapsed));
+      };
+      
+      updateTtl();
+      const interval = setInterval(updateTtl, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [message.isRead, message.locked, message.decryptedAt]);
 
   const handleTap = () => {
     if (message.locked) {
@@ -238,7 +252,6 @@ function ChatDetail({ conv, onBack }) {
   const [messageText, setMessageText] = useState('');
   const [showMedia, setShowMedia] = useState(false);
   const [recording, setRecording] = useState(false);
-  const [messageTtls, setMessageTtls] = useState({});
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const [fileAccept, setFileAccept] = useState('*/*');
@@ -251,22 +264,13 @@ function ChatDetail({ conv, onBack }) {
   // TTL countdown engine
   useEffect(() => {
     const interval = setInterval(() => {
-      setMessageTtls((prev) => {
-        const next = { ...prev };
-        let changed = false;
-        conv.messages.forEach((m) => {
-          if (m.isRead && !m.locked && (m.ttl > 0 || next[m.id] > 0)) {
-            const current = next[m.id] !== undefined ? next[m.id] : m.ttl;
-            if (current > 0) {
-              next[m.id] = current - 1;
-              changed = true;
-            }
-            if (current <= 1) {
-              deleteMessage(conv.id, m.id);
-            }
+      conv.messages.forEach((m) => {
+        if (m.isRead && !m.locked && m.decryptedAt) {
+          const elapsed = Math.floor((Date.now() - m.decryptedAt) / 1000);
+          if (elapsed >= 180) {
+            deleteMessage(conv.id, m.id);
           }
-        });
-        return changed ? next : prev;
+        }
       });
     }, 1000);
 
@@ -352,8 +356,10 @@ function ChatDetail({ conv, onBack }) {
     msg.locked = false;
     msg.text = text;
     msg.isRead = true;
+    if (!msg.decryptedAt) {
+      msg.decryptedAt = Date.now();
+    }
     msg.ttl = 180;
-    setMessageTtls((prev) => ({ ...prev, [msg.id]: 180 }));
   };
 
   return (
@@ -398,7 +404,6 @@ function ChatDetail({ conv, onBack }) {
             message={msg}
             isSent={msg.senderId === 'me'}
             onDecrypt={() => handleDecrypt(msg)}
-            ttl={messageTtls[msg.id] !== undefined ? messageTtls[msg.id] : msg.ttl}
           />
         ))}
         <div ref={messagesEndRef} />
