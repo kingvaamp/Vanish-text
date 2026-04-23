@@ -19,6 +19,27 @@ export const fromB64 = (str) =>
   Uint8Array.from(atob(str), (c) => c.charCodeAt(0)).buffer;
 
 /**
+ * Concatenate multiple Uint8Arrays or ArrayBuffers into a single Uint8Array
+ */
+export function concat(...buffers) {
+  const totalLength = buffers.reduce((acc, b) => acc + b.byteLength, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const b of buffers) {
+    result.set(new Uint8Array(b), offset);
+    offset += b.byteLength;
+  }
+  return result.buffer;
+}
+
+/**
+ * SHA-256 hash
+ */
+export async function sha256(data) {
+  return crypto.subtle.digest('SHA-256', data);
+}
+
+/**
  * Generate a new ECDH P-256 key pair
  * Returns: { publicKey, privateKey, publicB64, privateJwk }
  */

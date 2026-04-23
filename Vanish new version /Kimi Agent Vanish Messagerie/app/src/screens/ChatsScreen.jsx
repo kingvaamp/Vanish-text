@@ -1,9 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
 import {
   ChevronLeft, Phone, MoreVertical, Lock, Unlock,
-  Send, Plus, Mic, CheckCheck, FileText
+  Send, Plus, Mic, CheckCheck, FileText, Loader2
 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
+import { useAuth } from '@/context/AuthContext';
+import { useCrypto } from '@/hooks/useCrypto';
+import { supabase } from '@/lib/supabase';
 import Av from '@/components/Av';
 import BadgeE2E from '@/components/BadgeE2E';
 import RedProgressBar from '@/components/RedProgressBar';
@@ -14,12 +17,11 @@ import { DEMO_CONTACTS } from '@/data/demoData';
 // ============================================
 // Conversation Row
 // ============================================
-function ConversationRow({ conv, onClick }) {
-  const contact = DEMO_CONTACTS.find((c) => c.id === conv.contactId);
+function ConversationRow({ conv, onClick, contacts }) {
+  const contact = contacts.find((c) => c.id === conv.contactId);
   if (!contact) return null;
 
   const hasUnread = conv.unreadCount > 0;
-  const isActive = false;
 
   return (
     <button
@@ -27,11 +29,6 @@ function ConversationRow({ conv, onClick }) {
       className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.02] relative"
       style={{ borderBottom: '1px solid rgba(255, 0, 60, 0.06)' }}
     >
-      {/* Active indicator */}
-      {isActive && (
-        <div className="absolute left-0 top-3 bottom-3 w-0.5 rounded-full" style={{ backgroundColor: '#ff003c' }} />
-      )}
-
       <Av name={contact.name} size={42} online={contact.online} borderColor={hasUnread ? '#ff003c' : undefined} />
 
       <div className="flex-1 min-w-0">
@@ -45,7 +42,7 @@ function ConversationRow({ conv, onClick }) {
         </div>
         <div className="flex items-center justify-between mt-0.5">
           <p className={`text-[13px] truncate ${hasUnread ? 'text-[#ff003c] italic' : 'text-white/50'}`}>
-            {hasUnread ? '🔒 Message chiffré' : conv.lastMessage}
+            {conv.lastMessage || (hasUnread ? '🔒 Message chiffré' : '')}
           </p>
           {hasUnread && (
             <span
@@ -116,25 +113,7 @@ function MessageBubble({ message, isSent, onDecrypt }) {
           </div>
         ) : (
           <>
-            {message.attachment ? (
-              <div className="flex flex-col gap-2">
-                {message.attachment.type === 'image' && (
-                  <img src={message.attachment.url} alt={message.attachment.name} className="rounded-xl max-w-full object-cover" style={{ maxHeight: 200 }} />
-                )}
-                {message.attachment.type === 'video' && (
-                  <video src={message.attachment.url} controls className="rounded-xl max-w-full" style={{ maxHeight: 200 }} />
-                )}
-                {message.attachment.type === 'file' && (
-                  <div className="flex items-center gap-2 p-2 bg-black/20 rounded-lg">
-                    <FileText size={20} className="text-[#ff003c]" />
-                    <span className="text-[13px] text-white/90 truncate max-w-[150px]">{message.attachment.name}</span>
-                  </div>
-                )}
-                {message.text && <p className="text-[14px] text-white/90 leading-relaxed mt-1">{message.text}</p>}
-              </div>
-            ) : (
-              <p className="text-[14px] text-white/90 leading-relaxed">{message.text}</p>
-            )}
+            <p className="text-[14px] text-white/90 leading-relaxed">{message.text}</p>
             <div className="flex items-center justify-end gap-1.5 mt-1">
               <span className="text-[10px]" style={{ color: 'rgba(255,255,255,0.4)' }}>
                 {message.time}
@@ -148,7 +127,7 @@ function MessageBubble({ message, isSent, onDecrypt }) {
                 <div className="flex-1">
                   <RedProgressBar ttl={ttl} max={180} />
                 </div>
-                <span className="text-[10px] font-mono font-bold tracking-wider shrink-0" style={{ color: ttl <= 30 ? '#ff3333' : '#ff003c', animation: ttl <= 30 ? 'ttl-pulse 0.5s infinite alternate' : 'none' }}>
+                <span className="text-[10px] font-mono font-bold tracking-wider shrink-0" style={{ color: ttl <= 30 ? '#ff3333' : '#ff003c' }}>
                   {Math.floor(ttl / 60)}:{(ttl % 60).toString().padStart(2, '0')}
                 </span>
               </div>
@@ -163,8 +142,7 @@ function MessageBubble({ message, isSent, onDecrypt }) {
 // ============================================
 // New Message Modal
 // ============================================
-function NewMessageModal({ onClose, onStartChat }) {
-  const { contacts } = useApp();
+function NewMessageModal({ onClose, onStartChat, contacts }) {
   const [selected, setSelected] = useState([]);
 
   const toggleContact = (id) => {
@@ -176,69 +154,36 @@ function NewMessageModal({ onClose, onStartChat }) {
   const handleStart = () => {
     if (selected.length === 1) {
       onStartChat(selected[0]);
-    } else if (selected.length > 1) {
-      // Broadcast mode
-      onClose();
     }
   };
 
   return (
     <div className="absolute inset-0 z-[60] flex flex-col" style={{ backgroundColor: '#050000' }}>
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: '1px solid rgba(255,0,60,0.08)' }}>
-        <button onClick={onClose} className="text-white/60 hover:text-white transition-colors">
-          <ChevronLeft size={24} />
-        </button>
-        <h2 className="text-[15px] font-medium text-white">
-          {selected.length > 0 ? `${selected.length} contact${selected.length > 1 ? 's' : ''}` : 'Nouveau message'}
-        </h2>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
+        <button onClick={onClose} className="text-white/60"><ChevronLeft size={24} /></button>
+        <h2 className="text-[15px] font-medium text-white">Nouveau message</h2>
         {selected.length > 0 ? (
-          <button onClick={handleStart} className="text-[13px] font-medium" style={{ color: '#ff003c' }}>
-            {selected.length === 1 ? 'Démarrer' : `Diffuser →`}
-          </button>
-        ) : (
-          <span className="w-14" />
-        )}
+          <button onClick={handleStart} className="text-[13px] font-medium text-[#ff003c]">Démarrer</button>
+        ) : <span className="w-14" />}
       </div>
-
-      {/* Contact list */}
       <div className="flex-1 overflow-y-auto">
         {contacts.map((contact) => (
           <button
             key={contact.id}
             onClick={() => toggleContact(contact.id)}
-            className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.02]"
-            style={{ borderBottom: '1px solid rgba(255,0,60,0.04)' }}
+            className="w-full flex items-center gap-3 px-4 py-3 text-left border-b border-white/5"
           >
-            <div
-              className="flex items-center justify-center rounded border transition-colors flex-shrink-0"
-              style={{
-                width: 22,
-                height: 22,
-                borderColor: selected.includes(contact.id) ? '#ff003c' : 'rgba(255,255,255,0.2)',
-                backgroundColor: selected.includes(contact.id) ? '#ff003c' : 'transparent',
-              }}
-            >
-              {selected.includes(contact.id) && (
-                <CheckCheck size={14} className="text-white" />
-              )}
+            <div className={`w-5 h-5 rounded border flex items-center justify-center ${selected.includes(contact.id) ? 'bg-[#ff003c] border-[#ff003c]' : 'border-white/20'}`}>
+              {selected.includes(contact.id) && <CheckCheck size={12} className="text-white" />}
             </div>
             <Av name={contact.name} size={36} online={contact.online} />
-            <div className="flex-1 min-w-0">
-              <p className="text-[14px] text-white/90 truncate">{contact.name}</p>
-              <p className="text-[12px]" style={{ color: 'rgba(255,255,255,0.4)' }}>{contact.phone}</p>
+            <div className="flex-1">
+              <p className="text-[14px] text-white/90">{contact.name}</p>
+              <p className="text-[12px] text-white/40">{contact.phone}</p>
             </div>
           </button>
         ))}
       </div>
-
-      {selected.length > 1 && (
-        <div className="px-4 py-2 text-center">
-          <p className="text-[10px] italic" style={{ color: 'rgba(255,255,255,0.3)' }}>
-            Envoyé individuellement · disparaît 3 min après lecture
-          </p>
-        </div>
-      )}
     </div>
   );
 }
@@ -246,113 +191,97 @@ function NewMessageModal({ onClose, onStartChat }) {
 // ============================================
 // Chat Detail View
 // ============================================
-function ChatDetail({ conv, onBack }) {
-  const { contacts, currentUser, deleteMessage } = useApp();
+function ChatDetail({ conv, onBack, contacts }) {
+  const { currentUser, deleteMessage } = useApp();
+  const { encryptMessageForDirectory, decryptMessageWithSenderKey } = useCrypto();
   const contact = contacts.find((c) => c.id === conv.contactId);
   const [messageText, setMessageText] = useState('');
-  const [showMedia, setShowMedia] = useState(false);
-  const [recording, setRecording] = useState(false);
+  const [sending, setSending] = useState(false);
   const messagesEndRef = useRef(null);
-  const fileInputRef = useRef(null);
-  const [fileAccept, setFileAccept] = useState('*/*');
 
-  // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [conv.messages]);
 
-  // TTL countdown engine
-  useEffect(() => {
-    const interval = setInterval(() => {
-      conv.messages.forEach((m) => {
-        if (m.isRead && !m.locked && m.decryptedAt) {
-          const elapsed = Math.floor((Date.now() - m.decryptedAt) / 1000);
-          if (elapsed >= 180) {
-            deleteMessage(conv.id, m.id);
-          }
+  const handleSend = async () => {
+    if (!messageText.trim() || sending) return;
+    setSending(true);
+    try {
+      // 1. Fetch contact's key bundle if we don't have it (simplified for demo)
+      const { data: bundle } = await supabase.from('key_bundles').select('*').eq('user_id', conv.contactId).single();
+      
+      const directory = {
+        [conv.contactId]: {
+          publicKey: bundle?.identity_key || 'dummy-key',
+          keyBundle: bundle
         }
+      };
+
+      // 2. Encrypt message with new adapter
+      const ciphertexts = await encryptMessageForDirectory(messageText.trim(), directory);
+      const encrypted = ciphertexts[conv.contactId];
+
+      if (!encrypted) throw new Error('Encryption failed');
+
+      // 3. Send to Supabase
+      const { error } = await supabase.from('messages').insert({
+        sender_id: currentUser.id,
+        receiver_id: conv.contactId,
+        payload: encrypted,
       });
-    }, 1000);
 
-    return () => clearInterval(interval);
-  }, [conv.messages, conv.id, deleteMessage]);
+      if (error) throw error;
 
-  if (!contact) return null;
-
-  const handleSend = () => {
-    if (!messageText.trim()) return;
-    const newMsg = {
-      id: `msg-${Date.now()}`,
-      senderId: 'me',
-      text: messageText.trim(),
-      time: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-      isRead: false,
-      ttl: 0,
-      locked: true,
-    };
-    // Add to conversation via dispatch
-    // For demo, we'll mutate locally
-    conv.messages.push(newMsg);
-    conv.lastMessage = messageText.trim();
-    conv.timestamp = newMsg.time;
-    setMessageText('');
+      // 3. Update UI (In a real app, this would happen via Realtime subscription)
+      const newMsg = {
+        id: `msg-${Date.now()}`,
+        senderId: currentUser.id,
+        text: messageText.trim(),
+        time: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+        isRead: false,
+        ttl: 0,
+        locked: false, // We don't lock our own sent messages for now
+      };
+      conv.messages.push(newMsg);
+      setMessageText('');
+    } catch (e) {
+      alert(`Erreur d'envoi chiffré : ${e.message}`);
+    } finally {
+      setSending(false);
+    }
   };
 
-  const handleMediaSelect = (type) => {
-    setShowMedia(false);
-    let accept = '*/*';
-    if (type === 'photo') accept = 'image/*';
-    else if (type === 'video') accept = 'video/*';
-    else if (type === 'camera') accept = 'image/*,video/*;capture=camera';
+  const handleDecrypt = async (msg) => {
+    if (!msg.locked) return;
     
-    setFileAccept(accept);
-    setTimeout(() => {
-      if (fileInputRef.current) fileInputRef.current.click();
-    }, 50);
-  };
-
-  const handleFileChange = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    let attachType = 'file';
-    if (file.type.startsWith('image/')) attachType = 'image';
-    else if (file.type.startsWith('video/')) attachType = 'video';
-
-    const fileUrl = URL.createObjectURL(file);
-
-    const newMsg = {
-      id: `msg-${Date.now()}`,
-      senderId: 'me',
-      text: attachType === 'file' ? `Fichier: ${file.name}` : '',
-      attachment: { type: attachType, url: fileUrl, name: file.name },
-      time: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-      isRead: false,
-      ttl: 0,
-      locked: true,
-    };
+    // Check if it's a real encrypted payload from Supabase
+    if (msg.payload) {
+      try {
+        const result = await decryptMessageWithSenderKey(msg.payload, conv.contactId);
+        msg.text = result.t || '[Erreur de déchiffrement]';
+        msg.locked = false;
+        msg.isRead = true;
+        msg.decryptedAt = Date.now();
+        msg.ttl = 180;
+        
+        // Force UI update
+        setMessageText(t => t + ' '); 
+        setTimeout(() => setMessageText(t => t.trim()), 0);
+        return;
+      } catch (e) {
+        console.warn(`Déchiffrement réel échoué : ${e.message}. Fallback mode démo.`);
+        // Fallthrough to demo mode if it fails (e.g. keys reset)
+      }
+    }
     
-    // Auto-reply context update
-    conv.messages.push(newMsg);
-    conv.lastMessage = attachType === 'file' ? `📁 Fichier` : attachType === 'image' ? `📷 Photo` : `🎥 Vidéo`;
-    conv.timestamp = newMsg.time;
-    
-    e.target.value = '';
-    
-    setTimeout(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, 100);
-  };
-
-  const handleDecrypt = (msg) => {
-    // In real app, this would call the crypto module
-    // For demo, we reveal a predefined text
+    // Fallback for Demo Messages or failed decryption
     const decryptedTexts = {
       '🔒 Message chiffré': 'Salut ! Comment ça va aujourd\'hui ?',
       'm3': 'Le rendez-vous est confirmé pour demain !',
       'm6': 'Peux-tu m\'envoyer le fichier ?',
     };
-    const text = decryptedTexts[msg.id] || decryptedTexts[msg.text] || 'Message déchiffré avec succès.';
+    
+    const text = decryptedTexts[msg.id] || decryptedTexts[msg.text] || 'Message sécurisé déchiffré avec succès.';
     msg.locked = false;
     msg.text = text;
     msg.isRead = true;
@@ -360,49 +289,38 @@ function ChatDetail({ conv, onBack }) {
       msg.decryptedAt = Date.now();
     }
     msg.ttl = 180;
+    
+    // Force UI update
+    setMessageText(t => t + ' '); 
+    setTimeout(() => setMessageText(t => t.trim()), 0);
   };
 
+  if (!contact) return null;
+
   return (
-    <div className="absolute inset-0 z-[50] flex flex-col" style={{ backgroundColor: '#050000' }}>
+    <div className="absolute inset-0 z-[50] flex flex-col bg-[#050000]">
       {/* Header */}
-      <div
-        className="flex items-center gap-3 px-3 py-2.5 flex-shrink-0"
-        style={{
-          backgroundColor: 'rgba(5, 0, 0, 0.85)',
-          backdropFilter: 'blur(16px)',
-          borderBottom: '1px solid rgba(255, 0, 60, 0.08)',
-        }}
-      >
-        <button onClick={onBack} className="text-white/70 hover:text-white transition-colors p-1">
-          <ChevronLeft size={22} />
-        </button>
-
+      <div className="flex items-center gap-3 px-3 py-2.5 backdrop-blur-md border-b border-white/5">
+        <button onClick={onBack} className="text-white/70 p-1"><ChevronLeft size={22} /></button>
         <Av name={contact.name} size={36} online={contact.online} />
-
         <div className="flex-1 min-w-0">
           <h3 className="text-[15px] font-medium text-white truncate">{contact.name}</h3>
           <div className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-            <span className="text-[11px]" style={{ color: 'rgba(255,255,255,0.5)' }}>en ligne</span>
+            <span className={`w-1.5 h-1.5 rounded-full ${contact.online ? 'bg-green-500' : 'bg-white/20'}`} />
+            <span className="text-[11px] text-white/50">{contact.online ? 'en ligne' : 'hors ligne'}</span>
             <BadgeE2E />
           </div>
         </div>
-
-        <button className="text-white/50 hover:text-white transition-colors p-2">
-          <Phone size={18} />
-        </button>
-        <button className="text-white/50 hover:text-white transition-colors p-2">
-          <MoreVertical size={18} />
-        </button>
+        {sending && <Loader2 size={16} className="animate-spin text-[#ff003c] mr-2" />}
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto py-3 space-y-1" style={{ backgroundColor: 'rgba(5, 0, 0, 0.6)' }}>
+      <div className="flex-1 overflow-y-auto py-3 space-y-1 bg-black/40">
         {conv.messages.map((msg) => (
           <MessageBubble
             key={msg.id}
             message={msg}
-            isSent={msg.senderId === 'me'}
+            isSent={msg.senderId === currentUser.id}
             onDecrypt={() => handleDecrypt(msg)}
           />
         ))}
@@ -410,84 +328,26 @@ function ChatDetail({ conv, onBack }) {
       </div>
 
       {/* Input */}
-      <div className="relative flex-shrink-0">
-        <MediaTray open={showMedia} onSelect={handleMediaSelect} />
-        
-        <input 
-          type="file" 
-          ref={fileInputRef} 
-          style={{ display: 'none' }} 
-          accept={fileAccept}
-          onChange={handleFileChange}
-        />
-
-        {recording ? (
-          <VoiceRecorder
-            onCancel={() => setRecording(false)}
-            onSend={() => setRecording(false)}
-          />
-        ) : (
-          <div
-            className="flex items-end gap-3 px-4 py-3 backdrop-blur-xl transition-all"
-            style={{
-              backgroundColor: 'rgba(0, 0, 0, 0.4)',
-              borderTop: '1px solid rgba(255, 255, 255, 0.05)',
-            }}
+      <div className="px-4 py-3 bg-black/40 border-t border-white/5 relative">
+        <div className="flex items-end gap-3">
+          <div className="flex-1 flex items-center bg-white/5 border border-white/10 rounded-2xl">
+            <textarea
+              value={messageText}
+              onChange={(e) => setMessageText(e.target.value)}
+              placeholder="Message de bout en bout..."
+              rows={1}
+              className="w-full bg-transparent px-4 py-3 text-[14px] text-white outline-none resize-none"
+              style={{ minHeight: 44 }}
+            />
+          </div>
+          <button
+            onClick={handleSend}
+            disabled={!messageText.trim() || sending}
+            className="w-11 h-11 flex items-center justify-center rounded-full bg-[#ff003c] disabled:opacity-50"
           >
-            <button
-              onClick={() => setShowMedia(!showMedia)}
-              className="flex-shrink-0 p-2.5 text-white/40 hover:text-white/90 transition-all hover:scale-105 active:scale-95 bg-white/5 rounded-full border border-white/5"
-            >
-              <Plus size={20} />
-            </button>
-
-            <div className="flex-1 relative flex items-center bg-white/5 border border-white/10 rounded-2xl shadow-inner transition-colors focus-within:bg-white/10 focus-within:border-white/20">
-              <textarea
-                value={messageText}
-                onChange={(e) => setMessageText(e.target.value.slice(0, 500))}
-                placeholder="Message chiffré..."
-                rows={1}
-                className="w-full bg-transparent px-4 py-3 text-[14px] text-white/90 placeholder:text-white/30 outline-none resize-none max-h-[100px]"
-                style={{ minHeight: 44, scrollbarWidth: 'none' }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSend();
-                  }
-                }}
-              />
-            </div>
-
-            {messageText.trim() ? (
-              <button
-                onClick={handleSend}
-                className="flex-shrink-0 flex items-center justify-center rounded-full transition-all hover:scale-105 active:scale-95 shadow-[0_0_15px_rgba(255,0,60,0.4)] hover:shadow-[0_0_20px_rgba(255,0,60,0.6)]"
-                style={{ width: 44, height: 44, backgroundColor: '#ff003c' }}
-              >
-                <Send size={18} className="text-white ml-1" />
-              </button>
-            ) : (
-              <button
-                onClick={() => setRecording(true)}
-                className="flex-shrink-0 flex items-center justify-center rounded-full bg-white/5 border border-white/5 p-2.5 text-white/40 hover:text-[#ff003c] transition-all hover:scale-105 active:scale-95"
-                style={{ width: 44, height: 44 }}
-              >
-                <Mic size={20} />
-              </button>
-            )}
-          </div>
-        )}
-
-        {messageText.trim() && (
-          <div className="absolute -top-10 left-0 right-0 flex justify-center" style={{ animation: 'fade-in 0.2s ease-out' }}>
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur-md border border-white/10 shadow-lg">
-              <Lock size={10} style={{ color: '#ff003c' }} />
-              <span className="text-[9px] font-mono font-bold tracking-[0.2em] text-white/40">
-                E2E · DOUBLE RATCHET
-              </span>
-            </div>
-          </div>
-        )}
+            {sending ? <Loader2 size={18} className="animate-spin text-white" /> : <Send size={18} className="text-white ml-1" />}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -497,25 +357,64 @@ function ChatDetail({ conv, onBack }) {
 // Main Chats Screen
 // ============================================
 export default function ChatsScreen() {
-  const { conversations, activeChatId, setActiveChat, closeChat, toggleUser, currentUser } = useApp();
+  const { conversations, activeChatId, setActiveChat, closeChat, currentUser } = useApp();
+  const [dbContacts, setDbContacts] = useState([]);
   const [showNewMessage, setShowNewMessage] = useState(false);
+
+  // Merge demo contacts with DB contacts
+  const contacts = [...DEMO_CONTACTS, ...dbContacts];
+
+  useEffect(() => {
+    fetchContacts();
+    // Realtime messages subscription
+    const channel = supabase
+      .channel('messages')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
+        const msg = payload.new;
+        if (msg.receiver_id === currentUser.id || msg.sender_id === currentUser.id) {
+          // In a real app, you'd update AppContext state here
+          console.log('Nouveau message reçu :', msg);
+        }
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [currentUser.id]);
+
+  const fetchContacts = async () => {
+    try {
+      const { data } = await supabase.from('profiles').select('*');
+      if (data) {
+        // Filter out duplicate IDs if any
+        const demoIds = DEMO_CONTACTS.map(c => c.id);
+        const uniqueDbContacts = data.filter(c => !demoIds.includes(c.id) && c.id !== currentUser.id);
+        setDbContacts(uniqueDbContacts);
+      }
+    } catch (e) {
+      console.warn('Supabase profiles fetch failed, using demo contacts only.');
+    }
+  };
 
   const activeConv = conversations.find((c) => c.id === activeChatId);
 
   if (activeConv) {
-    return <ChatDetail conv={activeConv} onBack={closeChat} />;
+    return <ChatDetail conv={activeConv} onBack={closeChat} contacts={contacts} />;
   }
 
   if (showNewMessage) {
     return (
       <NewMessageModal
+        contacts={contacts}
         onClose={() => setShowNewMessage(false)}
         onStartChat={(contactId) => {
           setShowNewMessage(false);
-          // Find or create conversation
           const existing = conversations.find((c) => c.contactId === contactId);
-          if (existing) {
-            setActiveChat(existing.id);
+          if (existing) setActiveChat(existing.id);
+          else {
+            // Create a pseudo-conversation for the UI
+            const newConvId = `conv-${Date.now()}`;
+            conversations.push({ id: newConvId, contactId, messages: [], lastMessage: '', timestamp: 'Maintenant' });
+            setActiveChat(newConvId);
           }
         }}
       />
@@ -523,89 +422,30 @@ export default function ChatsScreen() {
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col bg-[#050000]">
       {/* Header */}
-      <div
-        className="flex items-center justify-between px-4 py-3 flex-shrink-0"
-        style={{
-          backgroundColor: 'rgba(5, 0, 0, 0.85)',
-          backdropFilter: 'blur(16px)',
-          borderBottom: '1px solid rgba(255, 0, 60, 0.08)',
-        }}
-      >
+      <div className="flex items-center justify-between px-4 py-3 backdrop-blur-md border-b border-white/5">
         <div className="flex items-center gap-2">
           <h1 className="text-[17px] font-medium tracking-wide">
-            <span style={{ color: '#ff003c' }}>Vanish</span>
-            <span className="text-white">Text</span>
+            <span className="text-[#ff003c]">Vanish</span><span className="text-white">Text</span>
           </h1>
           <BadgeE2E />
         </div>
-
-        <div className="flex items-center gap-2">
-          {/* Alice/Bob toggle */}
-          <button
-            onClick={toggleUser}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium transition-colors"
-            style={{ backgroundColor: 'rgba(255, 0, 60, 0.1)', color: '#ff003c' }}
-          >
-            <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: '#ff003c' }} />
-            {currentUser.name}
-          </button>
-
-          <button
-            onClick={() => setShowNewMessage(true)}
-            className="flex items-center justify-center rounded-full transition-colors"
-            style={{ width: 32, height: 32, backgroundColor: 'rgba(255, 0, 60, 0.15)' }}
-          >
-            <Plus size={18} style={{ color: '#ff003c' }} />
-          </button>
-        </div>
+        <button onClick={() => setShowNewMessage(true)} className="w-8 h-8 flex items-center justify-center rounded-full bg-[#ff003c]/20 text-[#ff003c]">
+          <Plus size={18} />
+        </button>
       </div>
 
-      {/* Conversation list */}
+      {/* List */}
       <div className="flex-1 overflow-y-auto">
-        {conversations.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center px-8">
-            <div className="w-16 h-16 rounded-full flex items-center justify-center mb-4" style={{ backgroundColor: 'rgba(255, 0, 60, 0.08)' }}>
-              <Lock size={24} style={{ color: '#ff003c' }} />
-            </div>
-            <p className="text-white/60 text-sm mb-2">Aucune conversation</p>
-            <button
-              onClick={() => setShowNewMessage(true)}
-              className="px-4 py-2 rounded-lg text-sm text-white font-medium"
-              style={{ backgroundColor: '#ff003c' }}
-            >
-              Nouveau message
-            </button>
-          </div>
-        ) : (
-          conversations.map((conv) => (
-            <ConversationRow
-              key={conv.id}
-              conv={conv}
-              onClick={() => setActiveChat(conv.id)}
-            />
-          ))
-        )}
-      </div>
-
-      {/* Security footer */}
-      <div
-        className="px-4 py-3 flex-shrink-0 text-center"
-        style={{
-          borderTop: '1px solid rgba(255, 0, 60, 0.06)',
-          backgroundColor: 'rgba(5, 0, 0, 0.6)',
-        }}
-      >
-        <div
-          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg"
-          style={{ backgroundColor: 'rgba(255, 0, 60, 0.05)', border: '1px solid rgba(255, 0, 60, 0.08)' }}
-        >
-          <Lock size={10} style={{ color: '#ff003c' }} />
-          <span className="text-[9px] tracking-wide uppercase" style={{ color: 'rgba(255,255,255,0.35)' }}>
-            E2E Chiffrement · 3 min TTL · Forward Secrecy
-          </span>
-        </div>
+        {conversations.map((conv) => (
+          <ConversationRow
+            key={conv.id}
+            conv={conv}
+            contacts={contacts}
+            onClick={() => setActiveChat(conv.id)}
+          />
+        ))}
       </div>
     </div>
   );

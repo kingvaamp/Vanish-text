@@ -1,8 +1,9 @@
 // ============================================
-// Encrypted Key Storage — localStorage with AES-256-GCM
+// Encrypted Key Storage — Native Capacitor Preferences with AES-256-GCM
 // Private keys are NEVER stored in plaintext
 // ============================================
 
+import { Preferences } from '@capacitor/preferences';
 import { hkdf, encrypt, decrypt, toB64, fromB64 } from './primitives';
 
 const STORAGE_PREFIX = 'vanish_';
@@ -11,21 +12,23 @@ const RATCHET_PREFIX = 'ratchet_';
 const SALT_KEY = 'storage_salt';
 
 /**
- * Derive the wrapping key from origin + stable salt
- * Same origin + same salt = same key (deterministic for the device)
+ * Derive the wrapping key from a stable salt
+ * We use Capacitor Preferences to store the salt securely.
  */
 async function getWrappingKey() {
-  let salt = localStorage.getItem(STORAGE_PREFIX + SALT_KEY);
+  let { value: salt } = await Preferences.get({ key: STORAGE_PREFIX + SALT_KEY });
   
   if (!salt) {
     // Generate a stable salt on first use
     const newSalt = crypto.getRandomValues(new Uint8Array(32));
     salt = toB64(newSalt);
-    localStorage.setItem(STORAGE_PREFIX + SALT_KEY, salt);
+    await Preferences.set({ key: STORAGE_PREFIX + SALT_KEY, value: salt });
   }
   
   const saltBuf = fromB64(salt);
-  const originData = new TextEncoder().encode(window.location.origin);
+  // In native apps, origin is usually capacitor://localhost, but to be robust across platforms
+  // we just use a static string combined with the random salt.
+  const originData = new TextEncoder().encode("VanishText-Native-App");
   
   // Combine origin with salt
   const combined = new Uint8Array(originData.length + saltBuf.byteLength);
@@ -37,7 +40,7 @@ async function getWrappingKey() {
 }
 
 /**
- * Encrypt data before storing
+ * Encrypt data before storing in Preferences
  */
 async function secureStore(key, data) {
   const wrapKey = await getWrappingKey();
@@ -50,14 +53,14 @@ async function secureStore(key, data) {
     t: Date.now(), // timestamp for potential key rotation
   };
   
-  localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(payload));
+  await Preferences.set({ key: STORAGE_PREFIX + key, value: JSON.stringify(payload) });
 }
 
 /**
- * Decrypt data from storage
+ * Decrypt data from Preferences
  */
 async function secureLoad(key) {
-  const stored = localStorage.getItem(STORAGE_PREFIX + key);
+  const { value: stored } = await Preferences.get({ key: STORAGE_PREFIX + key });
   if (!stored) return null;
   
   try {
@@ -115,35 +118,49 @@ export async function loadRatchetSession(conversationId) {
  * Check if a ratchet session exists
  */
 export async function hasRatchetSession(conversationId) {
-  const stored = localStorage.getItem(STORAGE_PREFIX + RATCHET_PREFIX + conversationId);
-  return stored !== null;
+  const { value } = await Preferences.get({ key: STORAGE_PREFIX + RATCHET_PREFIX + conversationId });
+  return value !== null;
 }
 
 /**
  * Delete a ratchet session
  */
 export async function deleteRatchetSession(conversationId) {
-  localStorage.removeItem(STORAGE_PREFIX + RATCHET_PREFIX + conversationId);
+  await Preferences.remove({ key: STORAGE_PREFIX + RATCHET_PREFIX + conversationId });
 }
 
 /**
  * Wipe ALL keys — called on logout
- * Removes all Vanish-related localStorage entries
+ * Removes all Vanish-related Preferences entries
  */
 export async function wipeAllKeys() {
-  const keysToRemove = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (key && key.startsWith(STORAGE_PREFIX)) {
-      keysToRemove.push(key);
+  const { keys } = await Preferences.keys();
+  for (const key of keys) {
+    if (key.startsWith(STORAGE_PREFIX)) {
+      await Preferences.remove({ key });
     }
   }
-  keysToRemove.forEach((key) => localStorage.removeItem(key));
 }
 
 /**
  * Check if identity key exists
  */
 export async function hasIdentityKey() {
-  return localStorage.getItem(STORAGE_PREFIX + IDENTITY_KEY) !== null;
+  const { value } = await Preferences.get({ key: STORAGE_PREFIX + IDENTITY_KEY });
+  return value !== null;
 }
+
+/**
+ * Wipe ratchet keys for a specific user ID
+ * @param {string} uid
+ */
+export async function wipeRatchetKeys(uid) {
+  const prefix = STORAGE_PREFIX + (uid ? uid + '_' : '') + RATCHET_PREFIX;
+  // Delete common ratchet-related keys
+  const ratchetKeys = ['_rk', '_ck_send', '_ck_recv', '_sn', '_rn', '_skipped'];
+  for (const key of ratchetKeys) {
+    await Preferences.remove({ key: prefix + key });
+  }
+  console.log(`[KeyStorage] Ratchet keys wiped for ${uid || 'global'}`);
+}
+
