@@ -1,4 +1,7 @@
-// useCrypto.js — Version production avec Forward Secrecy basique (v2)
+// useCrypto.js — Version production avec Double Ratchet (Signal-spec, v3)
+// Garde la compatibilité ascendante avec les messages legacy (v1, v2, v5).
+// Les nouvelles conversations utilisent le Double Ratchet (dr-aes-gcm-v1).
+
 import { useState, useCallback } from 'react';
 import {
   generateKeyPair,
@@ -14,12 +17,26 @@ import {
   loadIdentityKey,
   wipeAllKeys,
 } from './src/storage/KeyStorage';
+import {
+  initiateSession,
+  respondSession,
+  encryptMessage as drEncryptMessage,
+  decryptMessage as drDecryptMessage,
+  restoreSession,
+  hasSession,
+  getSession,
+  clearSession,
+  clearAllSessions,
+  canonicalConvId,
+} from './src/crypto/sessionManager';
 
-// Compteur de ratchet en mémoire par destinataire
-// Donne une Forward Secrecy basique : clé différente à chaque message
+// ── Compteur de ratchet legacy (v2) ─────────────────────────
 const ratchetCounters = {};
 
-// Calcule le Safety Number entre deux clés publiques (Signal-style, 60 digits)
+// ── Cache des clés publiques des contacts ───────────────────
+const contactKeys = {};
+
+// ── Safety Number (60 chiffres, Signal-style) ───────────────
 export async function computeSafetyNumber(myPublicB64, theirPublicB64) {
   if (!myPublicB64 || !theirPublicB64) return null;
   const sorted = [myPublicB64, theirPublicB64].sort();
@@ -28,7 +45,6 @@ export async function computeSafetyNumber(myPublicB64, theirPublicB64) {
     'SHA-256',
     enc.encode(sorted.join('||VanishText||'))
   );
-  // 20 octets = 160 bits → 60 chiffres décimaux (identique à Signal)
   const bytes = new Uint8Array(hash).slice(0, 20);
   let decimal = '';
   for (const byte of bytes) decimal += byte.toString().padStart(3, '0');
@@ -37,10 +53,13 @@ export async function computeSafetyNumber(myPublicB64, theirPublicB64) {
 
 export default function useCrypto() {
   const [keys, setKeys] = useState(null);
+  const [currentUid, setCurrentUid] = useState(null);
+  const [drReady, setDrReady] = useState(false);
 
-  // Génère ou restaure les clés d'identité depuis le Keychain
+  // ── Génère ou restaure les clés d'identité ────────────────
   const generateKeys = useCallback(async (uid) => {
     try {
+      setCurrentUid(uid);
       const saved = await loadIdentityKey(uid);
       if (saved) {
         const privateKey = await importPrivateKey(saved.privateJwk);
@@ -52,14 +71,18 @@ export default function useCrypto() {
         };
         const k = { type: 'identity', kp };
         setKeys(k);
-        console.log(`[Crypto] ✓ Clés restaurées pour ${uid || 'global'}`);
+        // Restaurer les sessions persistées (namespace = uid)
+        await restoreSession(uid);
+        setDrReady(true);
+        console.log(`[Crypto] ✓ Clés restaurées pour ${uid} ; DR ready`);
         return k;
       }
       const myKeys = await generateKeyPair();
       await saveIdentityKey(uid, { privateJwk: myKeys.privateJwk, publicB64: myKeys.publicB64 });
       const k = { type: 'identity', kp: myKeys };
       setKeys(k);
-      console.log(`[Crypto] ✓ Nouvelles clés générées pour ${uid || 'global'}`);
+      setDrReady(true);
+      console.log(`[Crypto] ✓ Nouvelles clés générées pour ${uid} ; DR ready`);
       return k;
     } catch (e) {
       console.error('[Crypto] Erreur generateKeys :', e);
@@ -68,12 +91,69 @@ export default function useCrypto() {
   }, []);
 
   const wipeKeys = useCallback(async (uid) => {
+    await clearAllSessions();
     await wipeAllKeys(uid);
     setKeys(null);
-    console.log(`[Crypto] Identity wiped for ${uid || 'global'}.`);
+    setCurrentUid(null);
+    setDrReady(false);
+    console.log(`[Crypto] Identity + sessions wiped for ${uid}.`);
   }, []);
 
-  // Chiffre un message pour N destinataires (N-Way ECDH + ratchet basique)
+  // ── Enregistrer la clé publique d'un contact ──────────────
+  const registerContactKey = useCallback((userId, publicKeyB64) => {
+    contactKeys[userId] = publicKeyB64;
+  }, []);
+
+  // ── Chiffrement avec Double Ratchet (nouveau) ────────────
+  const encryptWithDR = useCallback(async (plainText, recipientUserId) => {
+    if (!plainText || keys?.type !== 'identity' || !currentUid) return null;
+    const convId = canonicalConvId(currentUid, recipientUserId);
+    try {
+      if (!hasSession(convId)) {
+        const theirPub = contactKeys[recipientUserId];
+        if (!theirPub) return null;
+        await initiateSession(convId, keys.kp, theirPub);
+      }
+      const result = await drEncryptMessage(convId, plainText);
+      return {
+        algo:            'dr-aes-gcm-v1',
+        header:          result.header,
+        ciphertext:      result.ciphertext,
+        senderPublicKey: keys.kp.publicB64,
+        convId,
+      };
+    } catch (e) {
+      console.error(`[Crypto] DR encrypt error for ${recipientUserId}:`, e);
+      return null;
+    }
+  }, [keys, currentUid]);
+
+  // ── Chiffrement legacy (v2) ──────────────────────────────
+  const encryptLegacy = useCallback(async (plainText, peerUserId, peerPublicKeyB64) => {
+    try {
+      const peerKeyObj   = await importPublicKey(peerPublicKeyB64);
+      const sharedSecret = await ecdh(keys.kp.privateKey, peerKeyObj);
+      if (ratchetCounters[peerUserId] === undefined) ratchetCounters[peerUserId] = 0;
+      const msgIndex = ratchetCounters[peerUserId]++;
+      const aesKeyBuf = await hkdf(
+        sharedSecret, null,
+        `VanishText-msg-v3-${msgIndex}`, 32
+      );
+      const { iv, ciphertext } = await encrypt(aesKeyBuf, plainText);
+      return {
+        algo:            'ecdh-aes-gcm-ratchet-v2',
+        iv,
+        ciphertext,
+        senderPublicKey: keys.kp.publicB64,
+        msgIndex,
+      };
+    } catch (e) {
+      console.error(`[Crypto] Legacy encrypt error for ${peerUserId}:`, e);
+      return null;
+    }
+  }, [keys]);
+
+  // ── Chiffre un message pour N destinataires ──────────────
   const encryptMessageForDirectory = useCallback(
     async (plainText, directory) => {
       if (!plainText || keys?.type !== 'identity') {
@@ -83,56 +163,56 @@ export default function useCrypto() {
       const ciphertexts = {};
       for (const [userId, peerData] of Object.entries(directory)) {
         if (!peerData?.publicKey) continue;
-        try {
-          const peerKeyObj   = await importPublicKey(peerData.publicKey);
-          const sharedSecret = await ecdh(keys.kp.privateKey, peerKeyObj);
+        contactKeys[userId] = peerData.publicKey;
 
-          // Ratchet basique : compteur incrémenté à chaque message par destinataire
-          if (ratchetCounters[userId] === undefined) ratchetCounters[userId] = 0;
-          const msgIndex = ratchetCounters[userId]++;
+        // Essayer DR d'abord
+        if (peerData.doubleRatchet !== false) {
+          const drResult = await encryptWithDR(plainText, userId);
+          if (drResult) {
+            ciphertexts[userId] = drResult;
+            continue;
+          }
+        }
 
-          // NOTE: label must match decryptMessageWithSenderKey exactly (BUG 5 fix)
-          const aesKeyBuf = await hkdf(
-            sharedSecret, null,
-            `VanishText-msg-v3-${msgIndex}`, 32
-          );
-          const { iv, ciphertext } = await encrypt(aesKeyBuf, plainText);
-          ciphertexts[userId] = {
-            algo:            'ecdh-aes-gcm-ratchet-v2',
-            iv,
-            ciphertext,
-            senderPublicKey: keys.kp.publicB64,
-            msgIndex,
-          };
-        } catch (e) {
-          console.error(`[Crypto] Erreur chiffrement vers ${userId} :`, e);
+        // Fallback legacy
+        const legacyResult = await encryptLegacy(plainText, userId, peerData.publicKey);
+        if (legacyResult) {
+          ciphertexts[userId] = legacyResult;
         }
       }
       return ciphertexts;
     },
-    [keys]
+    [keys, encryptWithDR, encryptLegacy]
   );
 
-  // Déchiffre un message reçu
-  // payload : objet { algo, iv, ciphertext, senderPublicKey, msgIndex }
-  //        ou string legacy "enc:ecdh-aes-gcm:v5:iv:ct:senderKey"
+  // ── Déchiffrement DR ────────────────────────────────────
+  const decryptWithDR = useCallback(async (payload) => {
+    if (!keys?.kp?.privateKey) return null;
+    const { convId, header, ciphertext } = payload;
+    if (!convId || !header) return null;
+    try {
+      const plaintext = await drDecryptMessage(convId, keys.kp, header, ciphertext);
+      return { t: plaintext, s: payload.senderPublicKey || null };
+    } catch (e) {
+      console.warn('[Crypto] DR decrypt failed:', e.message);
+      return null;
+    }
+  }, [keys]);
+
+  // ── Déchiffrement (DR puis legacy) ──────────────────────
   const decryptMessageWithSenderKey = useCallback(
     async (payload, _fallback) => {
       if (!keys?.kp?.privateKey) {
         return { t: '[Erreur : clés non initialisées]', s: null };
       }
       try {
-        // Support legacy format string (v5) et nouveau format objet (v2)
         let data;
         if (typeof payload === 'string') {
           if (payload.startsWith('enc:')) {
             const parts = payload.split(':');
             data = {
-              iv:             parts[3],
-              ciphertext:     parts[4],
-              senderPublicKey: parts[5] || _fallback,
-              msgIndex:       0,
-              senderId:       'legacy',
+              algo: 'ecdh-aes-gcm-v5', iv: parts[3], ciphertext: parts[4],
+              senderPublicKey: parts[5] || _fallback, msgIndex: 0,
             };
           } else {
             data = JSON.parse(payload);
@@ -141,9 +221,15 @@ export default function useCrypto() {
           data = payload;
         }
 
+        // Double Ratchet
+        if (data.algo === 'dr-aes-gcm-v1') {
+          const result = await decryptWithDR(data);
+          if (result) return result;
+        }
+
+        // Legacy
         const { iv, ciphertext, senderPublicKey } = data;
         const msgIndex = Number(data.msgIndex || 0);
-
         if (!senderPublicKey) {
           return { t: '[Erreur : clé expéditeur manquante]', s: null };
         }
@@ -151,7 +237,6 @@ export default function useCrypto() {
         const senderKeyObj = await importPublicKey(senderPublicKey);
         const sharedSecret = await ecdh(keys.kp.privateKey, senderKeyObj);
 
-        // ESSAI DE DÉCHIFFREMENT AVEC PLUSIEURS VERSIONS DE LABEL HKDF (BUG 5 FIX EXTENDED)
         const LABELS = [
           `VanishText-msg-v3-${msgIndex}`,
           `VanishText-msg-v2-${msgIndex}`,
@@ -164,36 +249,47 @@ export default function useCrypto() {
           try {
             const aesKeyBuf = await hkdf(sharedSecret, null, label, 32);
             const plainText = await decrypt(aesKeyBuf, iv, ciphertext);
-            
-            // Si on arrive ici, le déchiffrement a réussi !
             try {
-              // Support Sealed Sender (objet { t, s })
               const parsed = JSON.parse(plainText);
               return { t: parsed.t || plainText, s: parsed.s || senderPublicKey };
             } catch (_) {
               return { t: plainText, s: senderPublicKey };
             }
-          } catch (e) {
-            lastError = e;
-            continue; // On essaye le label suivant
-          }
+          } catch (e) { lastError = e; continue; }
         }
-
-        // Si on a épuisé tous les labels
         throw new Error(lastError ? lastError.message : 'Auth Tag failure on all labels');
 
       } catch (e) {
-        console.error('[Crypto] Erreur déchiffrement critique :', e.message);
-        return { t: '[Déchiffrement échoué : Clé ou Index incorrect]', s: null };
+        console.error('[Crypto] Erreur déchiffrement :', e.message);
+        return { t: '[Déchiffrement échoué]', s: null };
       }
     },
-    [keys]
+    [keys, decryptWithDR]
   );
+
+  // ── Gestion de session DR ─────────────────────────────────
+  const ensureSession = useCallback(async (contactId, contactPublicKeyB64) => {
+    if (!currentUid) throw new Error('[Crypto] No current UID');
+    const convId = canonicalConvId(currentUid, contactId);
+    if (!hasSession(convId)) {
+      contactKeys[contactId] = contactPublicKeyB64;
+      await initiateSession(convId, keys.kp, contactPublicKeyB64);
+    }
+    return getSession(convId);
+  }, [keys, currentUid]);
+
+  const destroySession = useCallback(async (convId) => {
+    await clearSession(convId);
+  }, []);
 
   return {
     generateKeys,
     wipeKeys,
     encryptMessageForDirectory,
     decryptMessageWithSenderKey,
+    drReady,
+    registerContactKey,
+    ensureSession,
+    destroySession,
   };
 }

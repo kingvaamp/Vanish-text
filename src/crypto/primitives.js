@@ -1,4 +1,7 @@
 // src/crypto/primitives.js
+// Cryptographic primitives for VanishText
+// AES-256-GCM, ECDH P-256, HKDF-SHA256, HMAC-SHA256
+
 const subtle = crypto.subtle;
 const ENC = new TextEncoder();
 const DEC = new TextDecoder();
@@ -23,6 +26,16 @@ export function concat(...buffers) {
     offset += b.byteLength;
   }
   return out.buffer;
+}
+
+// ── Constant-time comparison ───────────────────────
+export function constantTimeEqual(a, b) {
+  const ua = new Uint8Array(a);
+  const ub = new Uint8Array(b);
+  if (ua.length !== ub.length) return false;
+  let diff = 0;
+  for (let i = 0; i < ua.length; i++) diff |= ua[i] ^ ub[i];
+  return diff === 0;
 }
 
 // ── Génération de paire de clés ECDH ──────────────
@@ -87,25 +100,7 @@ export async function hmac(keyBuf, data) {
   return subtle.sign('HMAC', k, data);
 }
 
-// ── AES-256-GCM chiffrement ───────────────────────
-export async function encrypt(keyBuf, plaintext) {
-  const key = await subtle.importKey(
-    'raw', keyBuf, 'AES-GCM', false, ['encrypt']
-  );
-  // IV aléatoire 96 bits — JAMAIS réutilisé
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await subtle.encrypt(
-    { name: 'AES-GCM', iv, tagLength: 128 },
-    key,
-    ENC.encode(plaintext)
-  );
-  return {
-    iv:         toB64(iv),
-    ciphertext: toB64(ct),
-  };
-}
-
-// ── SHA-256 Digest & Safety Numbers ───────────────
+// ── SHA-256 / SHA-512 ────────────────────────────
 export async function sha256(data) {
   const buf = typeof data === 'string' ? ENC.encode(data) : data;
   return await subtle.digest('SHA-256', buf);
@@ -116,13 +111,46 @@ export async function sha512(data) {
   return await subtle.digest('SHA-512', buf);
 }
 
+// ── AES-256-GCM ───────────────────────────────────
+// Encrypt plaintext with optional additionalData (AAD)
+// additionalData must be an ArrayBuffer or null
+export async function encrypt(keyBuf, plaintext, additionalData = null) {
+  const key = await subtle.importKey(
+    'raw', keyBuf, 'AES-GCM', false, ['encrypt']
+  );
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const algo = { name: 'AES-GCM', iv, tagLength: 128 };
+  if (additionalData) algo.additionalData = new Uint8Array(additionalData);
+  const ct = await subtle.encrypt(
+    algo,
+    key,
+    ENC.encode(plaintext)
+  );
+  return {
+    iv:         toB64(iv),
+    ciphertext: toB64(ct),
+  };
+}
+
+// Decrypt ciphertext with optional additionalData (AAD)
+export async function decrypt(keyBuf, ivB64, ctB64, additionalData = null) {
+  const key = await subtle.importKey(
+    'raw', keyBuf, 'AES-GCM', false, ['decrypt']
+  );
+  const algo = { name: 'AES-GCM', iv: fromB64(ivB64), tagLength: 128 };
+  if (additionalData) algo.additionalData = new Uint8Array(additionalData);
+  const pt = await subtle.decrypt(
+    algo,
+    key,
+    fromB64(ctB64)
+  );
+  return DEC.decode(pt);
+}
+
+// ── Safety Numbers ────────────────────────────────
 export async function generateSafetyNumber(keyA, keyB) {
-  // Signal-style Safety Numbers (60 digits)
-  // 1. Fingerprint pour chaque clé (SHA-512 truncated to 30 bytes)
   const fpA = new Uint8Array(await sha512(keyA)).slice(0, 30);
   const fpB = new Uint8Array(await sha512(keyB)).slice(0, 30);
-  
-  // 2. Trier et concaténer
   const sorted = [fpA, fpB].sort((a, b) => {
     for (let i = 0; i < 30; i++) {
       if (a[i] < b[i]) return -1;
@@ -130,35 +158,15 @@ export async function generateSafetyNumber(keyA, keyB) {
     }
     return 0;
   });
-  
   const combined = new Uint8Array(60);
   combined.set(sorted[0]);
   combined.set(sorted[1], 30);
-  
-  // 3. Convertir en blocs de chiffres (12 groupes de 5 = 60 chiffres)
-  // On traite par blocs de 5 octets -> ~12 chiffres, mais pour faire 60 chiffres propres:
-  // On va simplement prendre les 60 octets et les mapper en décimal par paires (ou BigInt)
-  // Pour rester simple et déterministe:
   let finalStr = "";
   for (let i = 0; i < 60; i += 5) {
-     const chunk = combined.slice(i, i + 5);
-     let val = 0n;
-     for (let j = 0; j < 5; j++) val = (val << 8n) + BigInt(chunk[j]);
-     finalStr += val.toString().padStart(12, '0').substring(0, 5); 
+    const chunk = combined.slice(i, i + 5);
+    let val = 0n;
+    for (let j = 0; j < 5; j++) val = (val << 8n) + BigInt(chunk[j]);
+    finalStr += val.toString().padStart(12, '0').substring(0, 5); 
   }
-  
   return finalStr.replace(/(\d{5})/g, '$1 ').trim();
-}
-
-// ── AES-256-GCM déchiffrement ─────────────────────
-export async function decrypt(keyBuf, ivB64, ctB64) {
-  const key = await subtle.importKey(
-    'raw', keyBuf, 'AES-GCM', false, ['decrypt']
-  );
-  const pt = await subtle.decrypt(
-    { name: 'AES-GCM', iv: fromB64(ivB64), tagLength: 128 },
-    key,
-    fromB64(ctB64)
-  );
-  return DEC.decode(pt);
 }
