@@ -19,11 +19,11 @@ import {
   toB64,
   fromB64,
   concat,
-} from './primitives';
+} from './primitives.js';
 import {
   verifySignedPrekeyECDSA,
-} from './prekeys';
-import { drInitWithDH, drInitFromSK, drEncrypt } from './doubleRatchet';
+} from './prekeys.js';
+import { drInitWithDH, drEncrypt } from './doubleRatchet.js';
 
 // ── Constants ───────────────────────────────────────────────
 const INFO_X3DH    = 'VanishText-X3DH-v2';  // v2 = full X3DH
@@ -193,14 +193,17 @@ export async function x3dhRespond(
   // 7) Build AD (sorted identity keys — same order as Alice)
   const AD = buildAD(aliceIK, myIdentityKeyPair.publicB64);
 
-  // 8) Initialize Double Ratchet (Bob receives with SK, no initial DH output)
-  //    Bob will do a DH ratchet step when he sends his first reply
-  const session = await drInitFromSK(SK, AD);
+  // 8) Initialize Double Ratchet (Bob receives with same DH3 as Alice)
+  //    Use drInitWithDH so both Alice and Bob share rootKey + initial chain key.
+  //    Then swap CKs→CKr (Bob starts as receiver, not sender).
+  const session = await drInitWithDH(SK, DH3, AD);
+  session.CKr = session.CKs;
+  session.CKs = null;
 
   // 9) Decrypt Alice's first message to verify everything matches
   try {
     // Import from doubleRatchet
-    const { drDecrypt } = await import('./doubleRatchet');
+    const { drDecrypt } = await import('./doubleRatchet.js');
     const plaintext = await drDecrypt(session, ciphertext.header, ciphertext);
     if (plaintext !== '__X3DH_INIT__') {
       console.warn('[X3DH] First message content unexpected (might be OK if already consumed)');

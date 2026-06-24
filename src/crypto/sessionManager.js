@@ -12,17 +12,17 @@ import {
   toB64,
   fromB64,
   concat,
-} from './primitives';
+} from './primitives.js';
 import {
   drEncrypt,
   drDecrypt,
   drInitFromSK,
   serializeSession,
   deserializeSession,
-} from './doubleRatchet';
-import { x3dhInitiate, x3dhRespond, fetchPrekeyBundle, uploadPrekeyBundle } from './x3dh';
-import { generateSignedPrekeyECDSA, generateOneTimePrekey, createPrekeyBundle } from './prekeys';
-import { saveSPK, loadSPK, saveOPKs, loadOPKs, getUnusedOPKs, markOPKUsed } from '../storage/KeyStorage';
+} from './doubleRatchet.js';
+import { x3dhInitiate, x3dhRespond, fetchPrekeyBundle, uploadPrekeyBundle } from './x3dh.js';
+import { generateSignedPrekeyECDSA, generateOneTimePrekey, createPrekeyBundle } from './prekeys.js';
+import { saveSPK, loadSPK, saveOPKs, loadOPKs, getUnusedOPKs, markOPKUsed } from '../storage/KeyStorage.js';
 
 // ── Constants ───────────────────────────────────────────────
 const SESSION_PREFIX = 'vt:dr:session:';  // KeyStorage prefix per conversation

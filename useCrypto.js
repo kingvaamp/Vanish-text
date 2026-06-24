@@ -11,8 +11,8 @@ import {
   hkdf,
   encrypt,
   decrypt,
-} from './src/crypto/primitives';
-import * as KeyStorage from './src/storage/KeyStorage';
+} from './src/crypto/primitives.js';
+import * as KeyStorage from './src/storage/KeyStorage.js';
 import {
   initiateSession,
   respondSession,
@@ -27,8 +27,8 @@ import {
   generatePrekeyBundle,
   getCurrentPrekeyBundle,
   getPendingInitMessage,
-} from './src/crypto/sessionManager';
-import { fetchPrekeyBundle, uploadPrekeyBundle } from './src/crypto/x3dh';
+} from './src/crypto/sessionManager.js';
+import { fetchPrekeyBundle, uploadPrekeyBundle } from './src/crypto/x3dh.js';
 
 // ── Compteur de ratchet legacy (v2) ─────────────────────────
 const ratchetCounters = {};

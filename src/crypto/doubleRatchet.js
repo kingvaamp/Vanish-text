@@ -15,7 +15,7 @@ import {
   concat,
   toB64,
   fromB64,
-} from './primitives';
+} from './primitives.js';
 
 // ── Constants ───────────────────────────────────────────────
 const INFO_RK = 'VanishText-DR-RK';  // KDF_RK info string
@@ -187,8 +187,8 @@ async function dhRatchetStep(session, nextDHr) {
   session.rootKey = rk2;
   session.CKs = cks;
   session.CKr = ckr;
-  session.Ns = 0;
   session.PN = session.Ns;  // PN = previous Ns before reset (per spec)
+  session.Ns = 0;
   // Nr stays at current value (recv chain was established in step 1)
 }
 
@@ -209,9 +209,21 @@ async function exportPublicKeyRaw(pubKey) {
 // a DH ratchet trigger. Otherwise, step the send chain and encrypt.
 export async function drEncrypt(session, plaintext) {
   if (!session.CKs) {
-    // No send chain yet — need a DH ratchet first
-    // This happens if we're Bob and haven't received Alice's first message
-    throw new Error('[DR] No send chain. Must receive message first or initialize as sender.');
+    // No send chain yet — try DH ratchet if we have a remote DHr + rootKey
+    // This happens when Bob replies for the first time after receiving Alice's message
+    if (!session.DHr || !session.rootKey) {
+      throw new Error('[DR] No send chain and no DHr/rootKey. Must receive message first or initialize as sender.');
+    }
+    // DH_RATCHET: rotate our DHs, derive new rootKey + send/receive chains
+    const newDHs = await generateKeyPair();
+    const dhOutput = await ecdh(newDHs.privateKey, session.DHr);
+    const { rootKey, chainKey } = await kdfRK(session.rootKey, dhOutput);
+    session.DHs = newDHs;
+    session.rootKey = rootKey;
+    session.CKs = chainKey;
+    session.PN = session.Ns;
+    session.Ns = 0;
+    // Keep CKr as-is (already consumed or will be used for future receives)
   }
 
   // Step the sending symmetric ratchet
@@ -228,15 +240,15 @@ export async function drEncrypt(session, plaintext) {
   // Encrypt with message key
   const { iv, ciphertext } = await encrypt(messageKey, plaintext, associatedData);
 
-  // Zero out message key (forward secrecy)
-  messageKey.fill(0);
-
   // Build header
   const header = {
-    DHr: session.DHr ? toB64(await exportPublicKeyRaw(session.DHr)) : null,
+    DHr: toB64(await exportPublicKeyRaw(session.DHs.publicKey)),
     Ns: msgNum,
     PN: session.PN,
   };
+
+  // Zero out message key (forward secrecy)
+  new Uint8Array(messageKey).fill(0);
 
   return { header, ciphertext: { iv, ciphertext } };
 }
@@ -248,7 +260,6 @@ export async function drEncrypt(session, plaintext) {
 // Returns decrypted plaintext string
 export async function drDecrypt(session, header, ciphertext) {
   const { DHr: senderDHrB64, Ns: msgNum, PN } = header;
-
   // Import the sender's ratchet public key
   const senderDHr = await importPublicKey(senderDHrB64);
 
@@ -262,7 +273,14 @@ export async function drDecrypt(session, header, ciphertext) {
     await exportPublicKeyRaw(session.DHr)
   );
 
-  if (isNewDHr) {
+  // ── First message ever: no DH ratchet, use existing CKr ──
+  // (from X3DH init — both sides share the same initial chain key)
+  if (!currentDHrB64 && session.CKr) {
+    session.DHr = senderDHr;
+    // Fall through to normal symmetric decrypt below
+  } else if (isNewDHr) {
+    // ── DH ratchet: DHr changed from one key to another ──
+
     // Check skipped keys for this DHr first
     const skippedKey = session.MKSkipped.get(`${senderDHrB64}:${msgNum}`);
     if (skippedKey) {
@@ -337,11 +355,11 @@ async function decryptWithMK(messageKey, msgNum, ciphertext, AD) {
   try {
     const plaintext = await decrypt(messageKey, ciphertext.iv, ciphertext.ciphertext, associatedData);
     // Zero out message key (forward secrecy)
-    messageKey.fill(0);
+    new Uint8Array(messageKey).fill(0);
     return plaintext;
   } catch (e) {
     // Zero out on failure too
-    messageKey.fill(0);
+    new Uint8Array(messageKey).fill(0);
     throw e;
   }
 }

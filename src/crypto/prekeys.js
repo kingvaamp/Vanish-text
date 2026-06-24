@@ -12,7 +12,7 @@ import {
   sha256,
   toB64,
   fromB64,
-} from './primitives';
+} from './primitives.js';
 
 // ── Constants ───────────────────────────────────────────────
 const INFO_SPK_SIGN = 'VanishText-SPK-Sign-v1';
@@ -95,8 +95,12 @@ async function exportPrivateKeyRaw(jwk) {
 }
 
 async function signECDSA(privateKeyJwk, data) {
+  // Strip key_ops and ext from JWK (ECDH keys have deriveBits ops, ECDSA needs sign)
+  const cleanJwk = { ...privateKeyJwk };
+  delete cleanJwk.key_ops;
+  delete cleanJwk.ext;
   const key = await crypto.subtle.importKey(
-    'jwk', privateKeyJwk,
+    'jwk', cleanJwk,
     { name: 'ECDSA', namedCurve: 'P-256' },
     false, ['sign']
   );
