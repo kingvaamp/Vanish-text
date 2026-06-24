@@ -1,10 +1,7 @@
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
-
 # dependencies
 node_modules/
 
-# Expo — do NOT ignore dist/ — we commit pre-built web assets for Render deployment
-# (Render free tier, 512 MB RAM, cannot run expo export without OOM-kill)
+# Expo
 .expo/
 web-build/
 expo-env.d.ts
@@ -41,3 +38,12 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Dead files — never re-add
+*.zip
+/Icon
+/Image JPEG.jpeg
+/Vanish new version /
+/assets/
+/dist/
+/scripts/
