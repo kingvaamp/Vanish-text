@@ -93,6 +93,48 @@ app.use(rateLimit({
 }));
 
 // ── API routes (BEFORE static/SPA fallback) ───────────────────────
+
+// ── Prekey Bundle API (in-memory store for now) ──────────────
+const prekeyBundles = new Map(); // userId -> { identityPubB64, signedPrekey, oneTimePrekeys }
+
+// Upload prekey bundle
+app.put('/api/prekey-bundle', (req, res) => {
+  try {
+    const { identityPubB64, signedPrekey, oneTimePrekeys } = req.body;
+    if (!identityPubB64 || !signedPrekey?.publicB64) {
+      return res.status(400).json({ error: 'Missing identityPubB64 or signedPrekey' });
+    }
+    const userId = req.headers['x-user-id'] || 'anonymous';
+    prekeyBundles.set(userId, {
+      identityPubB64,
+      signedPrekey,
+      oneTimePrekeys: oneTimePrekeys || [],
+    });
+    console.log('[PrekeyBundle] Uploaded for ' + userId + ' (' + (oneTimePrekeys?.length || 0) + ' OPKs)');
+    res.json({ status: 'ok', userId });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Fetch someone's prekey bundle (removes one OPK)
+app.get('/api/prekey-bundle/:userId', (req, res) => {
+  const bundle = prekeyBundles.get(req.params.userId);
+  if (!bundle) {
+    return res.status(404).json({ error: 'Prekey bundle not found for user: ' + req.params.userId });
+  }
+  const result = {
+    identityPubB64: bundle.identityPubB64,
+    signedPrekey:   bundle.signedPrekey,
+    oneTimePrekeys: bundle.oneTimePrekeys.slice(0, 1),
+  };
+  // Consume one OPK
+  if (bundle.oneTimePrekeys.length > 0) {
+    bundle.oneTimePrekeys.shift();
+  }
+  res.json(result);
+});
+
 app.get('/api/health', (_, res) => res.json({
   status: 'ok',
   ts:     new Date().toISOString(),

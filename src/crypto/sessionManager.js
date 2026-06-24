@@ -1,9 +1,9 @@
 // src/crypto/sessionManager.js
 // High-level session management for VanishText Double Ratchet.
-// Each conversation has one persistent session.
-// Sessions are stored in KeyStorage (expo-secure-store / localStorage).
+// Chaque conversation a une session persistante.
+// L'initiation utilise le protocole X3DH complet.
+// Les sessions sont stockées dans KeyStorage (expo-secure-store / localStorage).
 
-// Sessions stored via localStorage directly
 import {
   generateKeyPair,
   importPublicKey,
@@ -17,33 +17,27 @@ import {
   drEncrypt,
   drDecrypt,
   drInitFromSK,
-  drInitWithDH,
   serializeSession,
   deserializeSession,
-  drRatchetStep,
 } from './doubleRatchet';
+import { x3dhInitiate, x3dhRespond, fetchPrekeyBundle, uploadPrekeyBundle } from './x3dh';
+import { generateSignedPrekeyECDSA, generateOneTimePrekey, createPrekeyBundle } from './prekeys';
+import { saveSPK, loadSPK, saveOPKs, loadOPKs, getUnusedOPKs, markOPKUsed } from '../storage/KeyStorage';
 
 // ── Constants ───────────────────────────────────────────────
 const SESSION_PREFIX = 'vt:dr:session:';  // KeyStorage prefix per conversation
-const INFO_X3DH = 'VanishText-X3DH-v1';
-const INFO_DR_INIT = 'VanishText-DR-Init';
 
 // ── In-memory session cache ────────────────────────────────
 const sessions = new Map();           // convId -> session object
 const creationLocks = new Map();      // convId -> Promise (mutex)
-const pendingEphemeralKeys = new Map(); // convId -> ephemeral key pair
+const pendingInitMessages = new Map(); // convId -> X3DH initialMessage (to send first)
+const serverUrlCache = new Map();     // uid -> server URL
 
 // ── Helpers ────────────────────────────────────────────────
 
 // Canonical conversation ID: deterministic, same for both participants
 export function canonicalConvId(userId1, userId2) {
-  return 'conv-' + [userId1, userId2].sort().join('-');
-}
-
-// Build associated data from two identity public keys
-function buildAD(myPubB64, theirPubB64) {
-  const sorted = [myPubB64, theirPubB64].sort();
-  return new TextEncoder().encode(`VanishText-AD-${sorted[0]}-${sorted[1]}`);
+  return 'conv-' + [String(userId1), String(userId2)].sort().join('-');
 }
 
 // ── Session Persistence ─────────────────────────────────────
@@ -53,14 +47,11 @@ function getSessionKey(convId) {
 }
 
 async function saveSession(convId, session) {
-  const serialized = await serializeSession(session);
-  const key = getSessionKey(convId);
   try {
-    // Store in KeyStorage via a simple JSON blob
-    // We use localStorage directly (KeyStorage doesn't have a generic setItem)
+    const serialized = await serializeSession(session);
     const raw = JSON.stringify(serialized);
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(key, raw);
+      localStorage.setItem(getSessionKey(convId), raw);
     }
   } catch (e) {
     console.warn('[SessionManager] Failed to save session:', e);
@@ -68,10 +59,9 @@ async function saveSession(convId, session) {
 }
 
 async function loadSession(convId) {
-  const key = getSessionKey(convId);
   try {
     if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(key);
+      const raw = localStorage.getItem(getSessionKey(convId));
       if (raw) {
         const data = JSON.parse(raw);
         return await deserializeSession(data);
@@ -84,11 +74,11 @@ async function loadSession(convId) {
 }
 
 export async function clearSession(convId) {
-  const key = getSessionKey(convId);
   sessions.delete(convId);
+  pendingInitMessages.delete(convId);
   try {
     if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem(key);
+      localStorage.removeItem(getSessionKey(convId));
     }
   } catch (_) {}
 }
@@ -96,7 +86,7 @@ export async function clearSession(convId) {
 export async function clearAllSessions() {
   sessions.clear();
   creationLocks.clear();
-  pendingEphemeralKeys.clear();
+  pendingInitMessages.clear();
   try {
     if (typeof localStorage !== 'undefined') {
       const keys = Object.keys(localStorage).filter(k => k.startsWith(SESSION_PREFIX));
@@ -105,54 +95,78 @@ export async function clearAllSessions() {
   } catch (_) {}
 }
 
-// ── Session Initiation (X3DH-style) ─────────────────────────
+// ── Prekey Management ───────────────────────────────────────
 
-// Initiate a session as Alice (sender)
-// We have our identity keys and their public key
-// Returns the ephemeral public key to include in the first message header
-export async function initiateSession(convId, myIdentityKeyPair, theirIdentityPubB64) {
-  // Check if session already exists in memory
+// Generate and store a fresh prekey bundle for a user
+export async function generatePrekeyBundle(uid, identityKeyPair) {
+  // 1) Generate SPK signed by IK
+  const spk = await generateSignedPrekeyECDSA(identityKeyPair.privateJwk);
+  await saveSPK(uid, spk);
+
+  // 2) Generate 20 one-time prekeys
+  const opks = await generateOneTimePrekey(20);
+  await saveOPKs(uid, opks);
+
+  // 3) Create the bundle for upload
+  const bundle = createPrekeyBundle(
+    identityKeyPair.publicB64,
+    spk,
+    opks,
+    spk.signature,
+  );
+
+  return bundle;
+}
+
+// Get the current prekey bundle (for upload to server)
+export async function getCurrentPrekeyBundle(uid, identityPubB64) {
+  const spk = await loadSPK(uid);
+  if (!spk) return null;
+
+  const unusedOPKs = await getUnusedOPKs(uid);
+
+  return createPrekeyBundle(
+    identityPubB64,
+    spk,
+    unusedOPKs,
+    spk.signature,
+  );
+}
+
+// ── Session Initiation (X3DH) ────────────────────────────────
+
+// Initiate a session as Alice (with Bob's prekey bundle)
+// Si prekeyBundle n'est pas fourni, on le télécharge depuis le serveur
+export async function initiateSession(
+  convId,
+  myIdentityKeyPair,
+  theirUserId,
+  prekeyBundle,     // Optionnel : si déjà récupéré du serveur
+) {
   if (sessions.has(convId)) return sessions.get(convId);
-
-  // Check mutex (prevent double-init)
-  if (creationLocks.has(convId)) {
-    return creationLocks.get(convId);
-  }
+  if (creationLocks.has(convId)) return creationLocks.get(convId);
 
   const promise = (async () => {
     try {
-      // Load from storage first
+      // Vérifier le cache mémoire puis stockage
       const stored = await loadSession(convId);
       if (stored) {
         sessions.set(convId, stored);
         return stored;
       }
 
-      // Generate ephemeral key for initial DH
-      const ephemeralKP = await generateKeyPair();
-      pendingEphemeralKeys.set(convId, ephemeralKP);
+      // Lancer X3DH
+      const result = await x3dhInitiate(myIdentityKeyPair, prekeyBundle);
 
-      // Compute shared secret using X3DH-style derivation
-      const theirPubKey = await importPublicKey(theirIdentityPubB64);
-      const DH1 = await ecdh(myIdentityKeyPair.privateKey, theirPubKey);  // IK_A, IK_B
-      const DH2 = await ecdh(ephemeralKP.privateKey, theirPubKey);        // EK,   IK_B
+      // Stocker la session
+      sessions.set(convId, result.session);
+      await saveSession(convId, result.session);
 
-      // SK = HKDF(DH1 || DH2)
-      const skInput = concat(DH1, DH2);
-      const SK = await hkdf(skInput, null, INFO_X3DH, 32);
+      // Stocker le message initial à envoyer au destinataire
+      pendingInitMessages.set(convId, result.initialMessage);
 
-      // AD = sorted identity keys
-      const AD = buildAD(myIdentityKeyPair.publicB64, theirIdentityPubB64);
-
-      // Initialize Double Ratchet with SK and initial DH output (EK, IK_B)
-      const session = await drInitWithDH(SK, DH2, AD);
-
-      // Store rootKey in session (drInitWithDH already stores it)
-      sessions.set(convId, session);
-      await saveSession(convId, session);
-
-      console.log(`[SessionManager] ✓ Session initiated for ${convId}`);
-      return session;
+      console.log(`[SessionManager] ✓ X3DH session initiated for ${convId}`);
+      return result.session;
     } finally {
       creationLocks.delete(convId);
     }
@@ -162,14 +176,19 @@ export async function initiateSession(convId, myIdentityKeyPair, theirIdentityPu
   return promise;
 }
 
-// Respond as Bob (receiver of first message)
-// We have our identity keys and the sender's ephemeral public key from the message header
-export async function respondSession(convId, myIdentityKeyPair, senderEphemeralPubB64, senderIdentityPubB64) {
-  if (sessions.has(convId)) return sessions.get(convId);
+// Récupère le message X3DH initial (à envoyer dans le premier message)
+export function getPendingInitMessage(convId) {
+  return pendingInitMessages.get(convId) || null;
+}
 
-  if (creationLocks.has(convId)) {
-    return creationLocks.get(convId);
-  }
+// Respond as Bob (receives Alice's initial X3DH message)
+export async function respondSession(
+  convId,
+  myIdentityKeyPair,
+  initialMessage,
+) {
+  if (sessions.has(convId)) return sessions.get(convId);
+  if (creationLocks.has(convId)) return creationLocks.get(convId);
 
   const promise = (async () => {
     try {
@@ -179,41 +198,32 @@ export async function respondSession(convId, myIdentityKeyPair, senderEphemeralP
         return stored;
       }
 
-      const senderEK = await importPublicKey(senderEphemeralPubB64);
-      const senderIK = await importPublicKey(senderIdentityPubB64);
+      // Charger nos prekeys
+      const mySPK = await loadSPK(/* uid from context */);
+      const myOPKs = await loadOPKs(/* uid from context */);
+      const opkMap = {};
+      for (const opk of myOPKs) {
+        if (!opk.used) opkMap[opk.id] = opk.keyPair;
+      }
 
-      // X3DH on Bob's side
-      const DH1 = await ecdh(myIdentityKeyPair.privateKey, senderIK);        // IK_B, IK_A
-      const DH2 = await ecdh(myIdentityKeyPair.privateKey, senderEK);        // IK_B, EK_A
+      // Répondre au X3DH
+      const result = await x3dhRespond(
+        myIdentityKeyPair,
+        mySPK?.keyPair,
+        opkMap,
+        initialMessage,
+      );
 
-      const skInput = concat(DH1, DH2);
-      const SK = await hkdf(skInput, null, INFO_X3DH, 32);
+      // Marquer l'OPK comme utilisée si applicable
+      if (result.usedOPKId) {
+        await markOPKUsed(/* uid */, result.usedOPKId);
+      }
 
-      const AD = buildAD(senderIdentityPubB64, myIdentityKeyPair.publicB64);
+      sessions.set(convId, result.session);
+      await saveSession(convId, result.session);
 
-      // Bob initializes with SK (no initial DH output — will establish on first reply)
-      const session = await drInitFromSK(SK, AD);
-
-      // Bob also computes the first root key using DH(IK_B, EK_A) = DH2
-      // This is the same DH output Alice used for drInitWithDH
-      session.rootKey = (await hkdf(concat(
-        await ecdh(myIdentityKeyPair.privateKey, senderEK),
-        await ecdh(myIdentityKeyPair.privateKey, senderIK)
-      ), null, INFO_X3DH, 32)).buffer;  // Simplified — real X3DH would do proper derivation
-
-      // Actually, for proper init: SK is already the X3DH secret.
-      // We need KDF_RK(SK, DH2) to match Alice's initial rootKey.
-      // Let's use the HKDF root key derivation:
-      const dhOutput = DH2;  // Same as Alice's DH(EK, IK_B)
-      const initOutput = await hkdf(concat(SK, dhOutput), null, 'VanishText-DR-RK', 64);
-      session.rootKey = initOutput.slice(0, 32);
-      session.CKr = initOutput.slice(32, 64);  // Bob can receive immediately
-
-      sessions.set(convId, session);
-      await saveSession(convId, session);
-
-      console.log(`[SessionManager] ✓ Session responded for ${convId}`);
-      return session;
+      console.log(`[SessionManager] ✓ X3DH session responded for ${convId}`);
+      return result.session;
     } finally {
       creationLocks.delete(convId);
     }
@@ -225,78 +235,40 @@ export async function respondSession(convId, myIdentityKeyPair, senderEphemeralP
 
 // ── Encrypt / Decrypt API ──────────────────────────────────
 
-// Encrypt a plaintext message for a conversation
-// Returns { header, ciphertext } — include header in the message to send
-// header contains { DHr, Ns, PN } for the recipient to decrypt
 export async function encryptMessage(convId, plaintext) {
   const session = sessions.get(convId);
   if (!session) throw new Error(`[SessionManager] No session for ${convId}. Call initiateSession first.`);
 
   const result = await drEncrypt(session, plaintext);
-
-  // Persist after each encrypt (save chain state)
   await saveSession(convId, session);
-
-  // Include ephemeral public key if this is the first message from Alice
-  const ephemeralKP = pendingEphemeralKeys.get(convId);
-  if (ephemeralKP) {
-    result.header.ephemeralPublicKey = ephemeralKP.publicB64;
-    // Only include once — remove after first send
-    if (session.DHr) {
-      pendingEphemeralKeys.delete(convId);
-    }
-  }
-
   return result;
 }
 
-// Decrypt a message for a conversation
-// header = { DHr, Ns, PN, ephemeralPublicKey? }
-// ciphertext = { iv, ciphertext }
-// Returns decrypted plaintext string
-export async function decryptMessage(convId, myIdentityKeyPair, header, ciphertext) {
+export async function decryptMessage(convId, header, ciphertext) {
   let session = sessions.get(convId);
-
-  // If no session and header has ephemeralPublicKey, this is Bob receiving Alice's first message
-  if (!session && header.ephemeralPublicKey) {
-    // We need the sender's identity public key
-    // For now, look it up from the directory
-    const senderIdentityPubB64 = session?.AD ? null : null; // Will be set from directory
-    throw new Error('[SessionManager] Need sender identity key to respond to session');
-  }
-
   if (!session) {
-    // Try to load from storage
     session = await loadSession(convId);
     if (!session) throw new Error(`[SessionManager] No session for ${convId}`);
     sessions.set(convId, session);
   }
 
   const plaintext = await drDecrypt(session, header, ciphertext);
-
-  // Persist after each decrypt
   await saveSession(convId, session);
-
   return plaintext;
 }
 
 // ── Session management ──────────────────────────────────────
 
-// Restore session from storage into memory (call on app start)
 export async function restoreSession(convId) {
   const session = await loadSession(convId);
-  if (session) {
-    sessions.set(convId, session);
-  }
+  if (session) sessions.set(convId, session);
   return session;
 }
 
-// Check if a session exists for a conversation
 export function hasSession(convId) {
   return sessions.has(convId);
 }
 
-// Get a session (without loading)
 export function getSession(convId) {
   return sessions.get(convId);
 }
